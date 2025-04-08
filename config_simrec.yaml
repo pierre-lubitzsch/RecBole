@@ -3,6 +3,8 @@ ITEM_ID_FIELD: movieId
 RATING_FIELD: rating
 TIME_FIELD: timestamp
 
+# dataset: goodreads
+
 load_col:
   inter: [userId, movieId, rating, timestamp]
 
@@ -38,6 +40,6 @@ temp_contrast_reg: 1.0
 freeze_teacher: true
 
 # others
-epochs: 10
+epochs: 1
 learning_rate: 1e-3
 train_batch_size: 2048

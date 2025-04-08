@@ -3,8 +3,10 @@ ITEM_ID_FIELD: movieId
 RATING_FIELD: rating
 TIME_FIELD: timestamp
 
+# goodreads dataset
 load_col:
   inter: [userId, movieId, rating, timestamp]
+
 
 eval_args:
   group_by: user
@@ -14,17 +16,4 @@ eval_args:
 use_gpu: True
 gpu_id: 0
 show_progress: True
-
-MODEL_INPUT_TYPE: pairwise
-embedding_size: 64
-n_layers: 2
-n_intents: 32
-temp: 0.2
-
-emb_reg: 1e-6
-cen_reg: 1e-6
-ssl_reg: 1e-2
-
-# others
 epochs: 1
-learning_rate: 1e-3
