@@ -31,3 +31,7 @@ from recbole.model.general_recommender.admmslim import ADMMSLIM
 from recbole.model.general_recommender.simplex import SimpleX
 from recbole.model.general_recommender.diffrec import DiffRec
 from recbole.model.general_recommender.ldiffrec import LDiffRec
+from recbole.model.general_recommender.itembasedcf import ItemBasedCF
+from recbole.model.general_recommender.simrec import SimRec
+from recbole.model.general_recommender.dccf import DCCF
+from recbole.model.general_recommender.sknn import SKNN
