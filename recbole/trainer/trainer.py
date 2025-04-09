@@ -244,6 +244,8 @@ class Trainer(AbstractTrainer):
             with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
                 losses = loss_func(interaction)
 
+            torch.cuda.empty_cache()
+
             if isinstance(losses, tuple):
                 loss = sum(losses)
                 loss_tuple = tuple(per_loss.item() for per_loss in losses)
@@ -258,6 +260,9 @@ class Trainer(AbstractTrainer):
                     losses.item() if total_loss is None else total_loss + losses.item()
                 )
             self._check_nan(loss)
+
+            torch.cuda.empty_cache()
+
             scaler.scale(loss + sync_loss).backward()
             if self.clip_grad_norm:
                 clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
@@ -267,6 +272,9 @@ class Trainer(AbstractTrainer):
                 iter_data.set_postfix_str(
                     set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
                 )
+
+            torch.cuda.empty_cache()
+
         return total_loss
 
     def _valid_epoch(self, valid_data, show_progress=False):
