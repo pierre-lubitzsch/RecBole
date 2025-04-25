@@ -17,8 +17,8 @@ tabulate>=0.8.10
 plotly>=4.0.0
 texttable>=0.9.0
 psutil>=5.9.0
-lightbgm==4.6.0
-xgboost==2.1.4
+#lightbgm==4.6.0
+#xgboost==2.1.4
 
 pyg_lib
 torch_scatter
