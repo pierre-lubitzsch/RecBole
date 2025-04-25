@@ -408,4 +408,3 @@ class SimRec(GeneralRecommender):
         scores = torch.matmul(u_e, all_item_emb.transpose(0, 1))  # shape (batch, n_items)
         return scores
 
-
