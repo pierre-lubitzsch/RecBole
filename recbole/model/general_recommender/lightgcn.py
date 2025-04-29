@@ -183,7 +183,7 @@ class LightGCN(GeneralRecommender):
 
     def full_sort_predict(self, interaction):
         u_idx = interaction[self.USER_ID]
-        if self.restore_user_e is None:
+        if not hasattr(self, "restore_user_e") or not hasattr(self, "restore_item_e") or self.restore_user_e is None:
             self.restore_user_e, self.restore_item_e = self.forward()
         scores = torch.matmul(self.restore_user_e[u_idx], self.restore_item_e.t())
         return scores.view(-1)
