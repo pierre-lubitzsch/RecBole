@@ -129,7 +129,7 @@ class Trainer(AbstractTrainer):
         self.enable_amp = config["enable_amp"]
         self.enable_scaler = torch.cuda.is_available() and config["enable_scaler"]
         ensure_dir(self.checkpoint_dir)
-        saved_model_file = "{}-seed_{}-{}.pth".format(self.config["model"], config["seed"], get_local_time())
+        saved_model_file = f"model_{self.config["model"]}_seed_{config["seed"]}_date_{get_local_time()}.pth"
         self.saved_model_file = os.path.join(self.checkpoint_dir, saved_model_file)
         self.weight_decay = config["weight_decay"]
 
