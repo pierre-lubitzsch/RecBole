@@ -129,7 +129,7 @@ class Trainer(AbstractTrainer):
         self.enable_amp = config["enable_amp"]
         self.enable_scaler = torch.cuda.is_available() and config["enable_scaler"]
         ensure_dir(self.checkpoint_dir)
-        saved_model_file = f"model_{self.config["model"]}_seed_{config["seed"]}_date_{get_local_time()}.pth"
+        saved_model_file = f"model_{config['model']}_seed_{config['seed']}_date_{get_local_time()}.pth"
         self.saved_model_file = os.path.join(self.checkpoint_dir, saved_model_file)
         self.weight_decay = config["weight_decay"]
 
@@ -678,6 +678,26 @@ class Trainer(AbstractTrainer):
                 result = result.unsqueeze(0)
             result_list.append(result)
         return torch.cat(result_list, dim=0)
+
+
+
+class SRGNNTrainer(Trainer):
+    r"""
+    SRGNNTrainerLrScheduler is designed for training SRGNN with a LR scheduler.
+    Here we multiply the learning rate by 0.1 every 3 epochs.
+    """
+    def __init__(self, config, model):
+        super().__init__(config, model)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer=self.optimizer,
+            step_size=3,
+            gamma=0.1
+        )
+
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+        loss = super()._train_epoch(train_data, epoch_idx, loss_func=loss_func, show_progress=show_progress)
+        self.scheduler.step()
+        return loss
 
 
 class KGTrainer(Trainer):

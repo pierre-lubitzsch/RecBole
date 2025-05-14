@@ -11,6 +11,19 @@ import argparse
 
 from recbole.quick_start import run
 
+import numpy as np
+import random
+import torch
+
+def set_seed(seed: int):
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "-m", type=str, default="BPR", help="name of models")
@@ -36,8 +49,17 @@ if __name__ == "__main__":
         default=0,
         help="the global rank offset of this group",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="random seed to set, when not None"
+    )
 
     args, _ = parser.parse_known_args()
+
+    if args.seed is not None:
+        set_seed(args.seed)
 
     config_file_list = (
         args.config_files.strip().split(" ") if args.config_files else None

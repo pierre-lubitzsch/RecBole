@@ -99,28 +99,6 @@ class SRGNN(SequentialRecommender):
     r"""SRGNN regards the conversation history as a directed graph.
     In addition to considering the connection between the item and the adjacent item,
     it also considers the connection with other interactive items.
-
-    Such as: A example of a session sequence(eg:item1, item2, item3, item2, item4) and the connection matrix A
-
-    Outgoing edges:
-        === ===== ===== ===== =====
-         \    1     2     3     4
-        === ===== ===== ===== =====
-         1    0     1     0     0
-         2    0     0    1/2   1/2
-         3    0     1     0     0
-         4    0     0     0     0
-        === ===== ===== ===== =====
-
-    Incoming edges:
-        === ===== ===== ===== =====
-         \    1     2     3     4
-        === ===== ===== ===== =====
-         1    0     0     0     0
-         2   1/2    0    1/2    0
-         3    0     1     0     0
-         4    0     1     0     0
-        === ===== ===== ===== =====
     """
 
     def __init__(self, config, dataset):
