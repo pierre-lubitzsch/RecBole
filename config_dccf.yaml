@@ -11,21 +11,21 @@ eval_args:
   order: TO
   split: {RS: [0.8, 0.1, 0.1]}
 
-use_gpu: True
-gpu_id: 0
+use_gpu: False
+gpu_id: ""
 show_progress: True
 
 MODEL_INPUT_TYPE: pairwise
 embedding_size: 64
 n_layers: 2
-n_intents: 32
-temp: 0.2
-
-emb_reg: 1e-6
-cen_reg: 1e-6
-ssl_reg: 1e-2
 
 # others
 epochs: 1
 learning_rate: 1e-3
 train_batch_size: 256
+
+n_intents: 128
+temp: 0.5
+emb_reg: 1e-4
+cen_reg: 1e-4
+ssl_reg: 0.1

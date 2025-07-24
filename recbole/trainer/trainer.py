@@ -46,6 +46,8 @@ from recbole.utils import (
     WandbLogger,
 )
 from torch.nn.parallel import DistributedDataParallel
+import math
+import random
 
 
 class AbstractTrainer(object):
@@ -129,7 +131,12 @@ class Trainer(AbstractTrainer):
         self.enable_amp = config["enable_amp"]
         self.enable_scaler = torch.cuda.is_available() and config["enable_scaler"]
         ensure_dir(self.checkpoint_dir)
-        saved_model_file = f"model_{config['model']}_seed_{config['seed']}_date_{get_local_time()}.pth"
+        if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin"]:
+            saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_algorithm_{config['unlearning_algorithm']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
+        elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
+            saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_retrain_checkpoint_idx_to_match_{config['retrain_checkpoint_idx_to_match']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
+        else:
+            saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_best.pth"
         self.saved_model_file = os.path.join(self.checkpoint_dir, saved_model_file)
         self.weight_decay = config["weight_decay"]
 
@@ -216,7 +223,7 @@ class Trainer(AbstractTrainer):
             tuple which includes the sum of loss in each part.
         """
         self.model.train()
-        loss_func = loss_func or self.model.calculate_loss
+        loss_func = self.model.calculate_loss
         total_loss = None
         iter_data = (
             tqdm(
@@ -294,7 +301,7 @@ class Trainer(AbstractTrainer):
         valid_score = calculate_valid_score(valid_result, self.valid_metric)
         return valid_score, valid_result
 
-    def _save_checkpoint(self, epoch, verbose=True, **kwargs):
+    def _save_checkpoint(self, epoch, verbose=True, retrain_flag=False, retrain_checkpoint_idx_to_match=None, **kwargs):
         r"""Store the model parameters information and training information.
 
         Args:
@@ -304,6 +311,8 @@ class Trainer(AbstractTrainer):
         if not self.config["single_spec"] and self.config["local_rank"] != 0:
             return
         saved_model_file = kwargs.pop("saved_model_file", self.saved_model_file)
+        if "unlearn" in saved_model_file:
+            saved_model_file = f"{saved_model_file[:len('.pth')]}_unlearn_epoch_{epoch}.pth"
         state = {
             "config": self.config,
             "epoch": epoch,
@@ -417,6 +426,8 @@ class Trainer(AbstractTrainer):
         saved=True,
         show_progress=False,
         callback_fn=None,
+        retrain_flag=False,
+        retrain_checkpoint_idx_to_match=None,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -434,7 +445,7 @@ class Trainer(AbstractTrainer):
              (float, dict): best valid score and best valid result. If valid_data is None, it returns (-1, None)
         """
         if saved and self.start_epoch >= self.epochs:
-            self._save_checkpoint(-1, verbose=verbose)
+            self._save_checkpoint(-1, verbose=verbose, retrain_flag=retrain_flag, retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,)
 
         self.eval_collector.data_collect(train_data)
         if self.config["train_neg_sample_args"].get("dynamic", False):
@@ -465,7 +476,7 @@ class Trainer(AbstractTrainer):
             # eval
             if self.eval_step <= 0 or not valid_data:
                 if saved:
-                    self._save_checkpoint(epoch_idx, verbose=verbose)
+                    self._save_checkpoint(epoch_idx, verbose=verbose, retrain_flag=retrain_flag, retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,)
                 continue
             if (epoch_idx + 1) % self.eval_step == 0:
                 valid_start_time = time()
@@ -507,7 +518,7 @@ class Trainer(AbstractTrainer):
 
                 if update_flag:
                     if saved:
-                        self._save_checkpoint(epoch_idx, verbose=verbose)
+                        self._save_checkpoint(epoch_idx, verbose=verbose, retrain_flag=retrain_flag, retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,)
                     self.best_valid_result = valid_result
 
                 if callback_fn:
@@ -525,7 +536,458 @@ class Trainer(AbstractTrainer):
 
         self._add_hparam_to_tensorboard(self.best_valid_score)
         return self.best_valid_score, self.best_valid_result
+    
+    def target_params(
+        self,
+        model,
+    ):
+        # TODO: extend to selection of subset of params
+        return [p for _, p in model.named_parameters()]
+    
+    def norm_list(self, plist) -> float:
+        return torch.sqrt(sum(p.pow(2).sum() for p in plist)).item()
 
+    def _batch_grad(
+        self,
+        model,
+        batch,
+        param_list,
+        loss_func,
+        average_scale=None,
+        average=True,
+    ):
+        average_scale = average_scale or len(batch)
+        acc = [torch.zeros_like(p) for p in param_list]
+        # for interaction in batch:
+        #     interaction = interaction.to(self.device)
+        loss = loss_func(batch)
+        grads = torch.autograd.grad(loss, param_list, retain_graph=False)
+        for a, g in zip(acc, grads):
+            a += g.detach()
+        if average:
+            for a in acc:
+                a /= average_scale
+        return acc
+
+    def scif_epoch(
+        self,
+        epoch_idx,
+        forget_data=None,
+        clean_forget_data=None,
+        retain_train_data=None,
+        retain_valid_data=None,
+        retain_test_data=None,
+        show_progress=False,
+        train_pair_count=1024,
+        retain_samples_used_for_update=128,
+        max_norm=None,
+        unlearned_users_before=None,
+    ):
+
+        # r"""Train the model in an epoch
+
+        # Args:
+        #     train_data (DataLoader): The train data.
+        #     epoch_idx (int): The current epoch id.
+        #     loss_func (function): The loss function of :attr:`model`. If it is ``None``, the loss function will be
+        #         :attr:`self.model.calculate_loss`. Defaults to ``None``.
+        #     show_progress (bool): Show the progress of training epoch. Defaults to ``False``.
+
+        # Returns:
+        #     float/tuple: The sum of loss returned by all batches in this epoch. If the loss in each batch contains
+        #     multiple parts and the model return these multiple parts loss instead of the sum of loss, it will return a
+        #     tuple which includes the sum of loss in each part.
+        # """
+        self.model.train()
+        loss_func = self.model.calculate_loss
+        total_loss = None
+        # iter_data = (
+        #     tqdm(
+        #         retain_train_data,
+        #         total=len(retain_train_data),
+        #         ncols=100,
+        #         desc=set_color(f"Train {epoch_idx:>5}", "pink"),
+        #     )
+        #     if show_progress
+        #     else retain_train_data
+        # )
+        iter_data = retain_train_data
+
+        # if not self.config["single_spec"] and retain_train_data.shuffle:
+        #     retain_train_data.sampler.set_epoch(epoch_idx)
+
+        # scaler = amp.GradScaler(enabled=self.enable_scaler)
+
+        param_list = self.target_params(self.model)
+
+        neg_grads = None
+        pos_grads = None
+
+        forget_sample_count = max(1, len(forget_data.dataset) - len(clean_forget_data.dataset))
+        print(f"forget data length: {len(forget_data.dataset)}, clean forget data length: {len(clean_forget_data.dataset)}")
+        retain_count = max(1, retain_samples_used_for_update * forget_sample_count - len(clean_forget_data.dataset))
+        
+        # calculate grads for forget data which we want to forget
+        for batch_idx, interaction in enumerate(forget_data):
+            interaction = interaction.to(self.device)
+            cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
+            if neg_grads is None:
+                neg_grads = [-g for g in cur_grads]
+            else:
+                for i in range(len(cur_grads)):
+                    neg_grads[i] -= cur_grads[i]
+        
+        # calculate grads for the cleaned forget data (forgotten interactions are removed)
+        clean_forget_data_size = 0
+        for batch_idx, interaction in enumerate(clean_forget_data):
+            clean_forget_data_size += len(interaction)
+            interaction = interaction.to(self.device)
+            cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
+            if pos_grads is None:
+                pos_grads = [g for g in cur_grads]
+            else:
+                for i in range(len(cur_grads)):
+                    pos_grads[i] += cur_grads[i]
+        
+        
+        # get retain grads from the retain data to prevent catastrophic forgetting
+        for batch_idx, interaction in enumerate(retain_train_data):
+            if retain_count <= 0:
+                break
+            interaction = interaction.to(self.device)
+            # filter out forgotten users from the original data we use here
+            mask = ~torch.isin(interaction["user_id"], torch.tensor(unlearned_users_before, device=self.device))
+            interaction = interaction[mask]
+            interaction = interaction[:retain_count]
+            cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
+            if pos_grads is None:
+                pos_grads = [g for g in cur_grads]
+            else:
+                for i in range(len(cur_grads)):
+                    pos_grads[i] += cur_grads[i]
+            retain_count -= len(interaction)
+
+        grads = [n + p for n, p in zip(neg_grads, pos_grads)]
+
+        inv_hvp, _ = self.cg_inv_hvp(
+            self.model,
+            clean_forget_data,
+            retain_train_data,
+            forget_data,
+            grads,
+            param_list,
+        )
+
+        tau = 1 / len(retain_train_data.dataset)
+        if max_norm is not None:
+            delta_norm = tau * self.norm_list(inv_hvp)
+            if delta_norm > max_norm:
+                scale = max_norm / delta_norm
+                inv_hvp = [x * scale for x in inv_hvp]
+        
+        with torch.no_grad():
+            for p, d in zip(param_list, inv_hvp):
+                p -= tau * d
+
+        print(f"[SCIF]  removed {len(forget_data.dataset)} samples, "
+            f"tau={tau},  ||delta theta||={tau * self.norm_list(inv_hvp)}")
+
+    def _dot_list(self, a, b):
+        return sum((x * y).sum() for x, y in zip(a, b))
+    
+    def _add_scaled(self, x, y, alpha):
+        return [xi + alpha * yi for xi, yi in zip(x, y)]
+
+    def _hvp_single(self, model, interaction, v_list, param_list):
+        loss_func = model.calculate_loss
+        # second derivative not supported for RNNs when using cuDNN...
+        with torch.backends.cudnn.flags(enabled=False):
+            loss = loss_func(interaction)
+            grad = torch.autograd.grad(loss, param_list, create_graph=True)
+            dot  = sum((g * v).sum() for g, v in zip(grad, v_list))
+            hv   = torch.autograd.grad(dot, param_list, retain_graph=False)
+        return [h.detach() for h in hv]
+
+    def _hvp_dataset(
+        self,
+        model, data_batch,
+        v_list, param_list,
+        average=True,
+    ):
+        acc = [torch.zeros_like(p) for p in v_list]
+        # for interaction in data_batch:
+        interaction = data_batch
+        hv = self._hvp_single(
+            model, interaction,
+            v_list, param_list,
+        )
+        for a, h in zip(acc, hv):
+            a += h
+        if average:
+            bs = len(data_batch)
+            for a in acc:
+                a /= bs
+        return acc
+
+    def cg_inv_hvp(
+        self,
+        model,
+        clean_forget_data,
+        retain_train_data,
+        forget_data,
+        v_list,
+        param_list,
+        damping= 0.01,
+        bs=16,
+        max_iter=None,
+        tol=1e-5,
+        LOCAL=False,
+        samples_wanted_constant=1024,
+    ):
+        """
+        Solve  (H + lambda I) x = v  for x with conjugate gradients.
+        Returns: (x, diverged_flag)
+        """
+        # Total number of iterations: one pass over the data by default
+        max_iter = max_iter or math.ceil((len(clean_forget_data.dataset) + len(retain_train_data.dataset)) / bs)
+
+        # --- initialisation ------------------------------------------------------
+        x      = [torch.zeros_like(v) for v in v_list]   # x_theta
+        r      = [v.clone() for v in v_list]             # r_theta = v − H x_theta  (H x_theta = 0)
+        p      = [ri.clone() for ri in r]                # p_theta = r_theta
+        rs_old = self._dot_list(r, r).item()
+
+        samples_wanted = samples_wanted_constant * max(1, len(forget_data.dataset) - len(clean_forget_data.dataset))
+        samples_seen = 0
+        break_flag = False
+
+        for interaction in clean_forget_data:
+            if break_flag:
+                break
+            for i in range(0, len(interaction), bs):
+                batch = interaction[i : i + bs]
+                if samples_seen >= samples_wanted:
+                    break_flag = True
+                    break
+                interaction = interaction.to(self.device)
+                interaction = interaction[:samples_wanted - samples_seen]
+                samples_seen += len(interaction)
+                batch = interaction
+
+                q = self._hvp_dataset(
+                    model, batch,
+                    p, param_list,
+                    average=True,
+                )
+                # add lambda I term
+                q = [qi + damping * pi for qi, pi in zip(q, p)]
+
+                if self._dot_list(p, q).item() == 0:
+                    # p and q are orthogonal, we cannot proceed
+                    print(f"[CG]  p and q are orthogonal at iteration {i // bs}, stopping.")
+                    break
+                alpha = rs_old / self._dot_list(p, q).item()
+
+                # x_{k+1}  =  x_k + alpha p_k
+                x = self._add_scaled(x, p, alpha)
+
+                # r_{k+1}  =  r_k − alpha q
+                r = self._add_scaled(r, q, -alpha)
+
+                rs_new = self._dot_list(r, r).item()
+                if math.sqrt(rs_new) < tol:
+                    break  # converged
+
+                beta = rs_new / rs_old
+
+                # p_{k+1}  =  r_{k+1} + beta p_k
+                p = [ri + beta * pi for ri, pi in zip(r, p)]
+                rs_old = rs_new
+
+        
+        for interaction in retain_train_data:
+            if break_flag:
+                break
+            for i in range(0, len(interaction), bs):
+                batch = interaction[i : i + bs]
+                if samples_seen >= samples_wanted:
+                    break_flag = True
+                    break
+                interaction = interaction.to(self.device)
+                interaction = interaction[:samples_wanted - samples_seen]
+                samples_seen += len(interaction)
+                batch = interaction
+
+                q = self._hvp_dataset(
+                    model, batch,
+                    p, param_list,
+                    average=True,
+                )
+                # add lambda I term
+                q = [qi + damping * pi for qi, pi in zip(q, p)]
+
+                if self._dot_list(p, q).item() == 0:
+                    # p and q are orthogonal, we cannot proceed
+                    print(f"[CG]  p and q are orthogonal at iteration {i // bs}, stopping.")
+                    break
+                alpha = rs_old / self._dot_list(p, q).item()
+
+                # x_{k+1}  =  x_k + alpha p_k
+                x = self._add_scaled(x, p, alpha)
+
+                # r_{k+1}  =  r_k − alpha q
+                r = self._add_scaled(r, q, -alpha)
+
+                rs_new = self._dot_list(r, r).item()
+                if math.sqrt(rs_new) < tol:
+                    break  # converged
+
+                beta = rs_new / rs_old
+
+                # p_{k+1}  =  r_{k+1} + beta p_k
+                p = [ri + beta * pi for ri, pi in zip(r, p)]
+                rs_old = rs_new
+
+            
+
+        diverged = math.sqrt(rs_old) >= tol
+        return x, diverged
+
+    def unlearn(
+        self,
+        epoch_idx,
+        forget_data,
+        clean_forget_data,
+        retain_train_data,
+        retain_valid_data=None,
+        retain_test_data=None,
+        unlearning_algorithm="scif",
+        verbose=True,
+        saved=True,
+        show_progress=False,
+        callback_fn=None,
+        max_norm=None,
+        unlearned_users_before=None,
+    ):
+        r"""Train the model based on the train data and the valid data.
+
+        Args:
+            train_data (DataLoader): the train data
+            valid_data (DataLoader, optional): the valid data, default: None.
+                                               If it's None, the early_stopping is invalid.
+            verbose (bool, optional): whether to write training and evaluation information to logger, default: True
+            saved (bool, optional): whether to save the model parameters, default: True
+            show_progress (bool): Show the progress of training epoch and evaluate epoch. Defaults to ``False``.
+            callback_fn (callable): Optional callback function executed at end of epoch.
+                                    Includes (epoch_idx, valid_score) input arguments.
+
+        Returns:
+             (float, dict): best valid score and best valid result. If valid_data is None, it returns (-1, None)
+        """
+        # if saved and self.start_epoch >= self.epochs:
+        #     self._save_checkpoint(-1, verbose=verbose)
+
+        # self.eval_collector.data_collect(train_data)
+        # if self.config["train_neg_sample_args"].get("dynamic", False):
+        #     train_data.get_model(self.model)
+        # valid_step = 0
+
+        # for epoch_idx in range(self.start_epoch, self.epochs):
+        #     # unlearn 1 epoch
+        if unlearning_algorithm == "scif":
+            training_start_time = time()
+            self.scif_epoch(
+                epoch_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data,
+                retain_valid_data,
+                retain_test_data,
+                show_progress=show_progress,
+                max_norm=max_norm,
+                unlearned_users_before=unlearned_users_before,
+            )
+        
+        if saved:
+            self._save_checkpoint(epoch_idx, verbose=verbose)
+            # self.train_loss_dict[epoch_idx] = (
+            #     sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+            # )
+            # training_end_time = time()
+            # train_loss_output = self._generate_train_loss_output(
+            #     epoch_idx, training_start_time, training_end_time, train_loss
+            # )
+            # if verbose:
+            #     self.logger.info(train_loss_output)
+            # self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
+            # self.wandblogger.log_metrics(
+            #     {"epoch": epoch_idx, "train_loss": train_loss, "train_step": epoch_idx},
+            #     head="train",
+            # )
+
+        #     # eval
+        #     if self.eval_step <= 0 or not valid_data:
+        #         if saved:
+        #             self._save_checkpoint(epoch_idx, verbose=verbose)
+        #         continue
+        #     if (epoch_idx + 1) % self.eval_step == 0:
+        #         valid_start_time = time()
+        #         valid_score, valid_result = self._valid_epoch(
+        #             valid_data, show_progress=show_progress
+        #         )
+
+        #         (
+        #             self.best_valid_score,
+        #             self.cur_step,
+        #             stop_flag,
+        #             update_flag,
+        #         ) = early_stopping(
+        #             valid_score,
+        #             self.best_valid_score,
+        #             self.cur_step,
+        #             max_step=self.stopping_step,
+        #             bigger=self.valid_metric_bigger,
+        #         )
+        #         valid_end_time = time()
+        #         valid_score_output = (
+        #             set_color("epoch %d evaluating", "green")
+        #             + " ["
+        #             + set_color("time", "blue")
+        #             + ": %.2fs, "
+        #             + set_color("valid_score", "blue")
+        #             + ": %f]"
+        #         ) % (epoch_idx, valid_end_time - valid_start_time, valid_score)
+        #         valid_result_output = (
+        #             set_color("valid result", "blue") + ": \n" + dict2str(valid_result)
+        #         )
+        #         if verbose:
+        #             self.logger.info(valid_score_output)
+        #             self.logger.info(valid_result_output)
+        #         self.tensorboard.add_scalar("Vaild_score", valid_score, epoch_idx)
+        #         self.wandblogger.log_metrics(
+        #             {**valid_result, "valid_step": valid_step}, head="valid"
+        #         )
+
+        #         if update_flag:
+        #             if saved:
+        #                 self._save_checkpoint(epoch_idx, verbose=verbose)
+        #             self.best_valid_result = valid_result
+
+        #         if callback_fn:
+        #             callback_fn(epoch_idx, valid_score)
+
+        #         if stop_flag:
+        #             stop_output = "Finished training, best eval result in epoch %d" % (
+        #                 epoch_idx - self.cur_step * self.eval_step
+        #             )
+        #             if verbose:
+        #                 self.logger.info(stop_output)
+        #             break
+
+        #         valid_step += 1
+
+        # self._add_hparam_to_tensorboard(self.best_valid_score)
+        
     def _full_sort_batch_eval(self, batched_data):
         interaction, history_index, positive_u, positive_i = batched_data
         try:
@@ -607,16 +1069,17 @@ class Trainer(AbstractTrainer):
         if self.config["eval_type"] == EvaluatorType.RANKING:
             self.tot_item_num = eval_data._dataset.item_num
 
-        iter_data = (
-            tqdm(
-                eval_data,
-                total=len(eval_data),
-                ncols=100,
-                desc=set_color(f"Evaluate   ", "pink"),
-            )
-            if show_progress
-            else eval_data
-        )
+        # iter_data = (
+        #     tqdm(
+        #         eval_data,
+        #         total=len(eval_data),
+        #         ncols=100,
+        #         desc=set_color(f"Evaluate   ", "pink"),
+        #     )
+        #     if show_progress
+        #     else eval_data
+        # )
+        iter_data = eval_data
 
         num_sample = 0
         for batch_idx, batched_data in enumerate(iter_data):
@@ -1453,7 +1916,7 @@ class NCLTrainer(Trainer):
             tuple which includes the sum of loss in each part.
         """
         self.model.train()
-        loss_func = loss_func or self.model.calculate_loss
+        loss_func = self.model.calculate_loss
         total_loss = None
         iter_data = (
             tqdm(

@@ -100,11 +100,12 @@ class Dataset(torch.utils.data.Dataset):
         feat_name_list (list): A list contains all the features' name (:class:`str`), including additional features.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, unlearning=False):
         super().__init__()
         self.config = config
         self.dataset_name = config["dataset"]
         self.logger = getLogger()
+        self.unlearning = unlearning
         self._from_scratch()
 
     def _from_scratch(self):
@@ -265,6 +266,9 @@ class Dataset(torch.utils.data.Dataset):
         """
         if not os.path.exists(dataset_path):
             self._download()
+        if self.unlearning:
+            token += f"_unlearn_pairs_{self.config['unlearning_sample_selection_method']}_seed_{self.config['unlearn_sample_selection_seed']}_unlearning_fraction_{float(self.config['unlearning_fraction'])}"
+        print(token)
         self._load_inter_feat(token, dataset_path)
         self.user_feat = self._load_user_or_item_feat(
             token, dataset_path, FeatureSource.USER, "uid_field"
@@ -1842,7 +1846,21 @@ class Dataset(torch.utils.data.Dataset):
         split_mode = list(split_args.keys())[0]
         assert len(split_args.keys()) == 1
         group_by = self.config["eval_args"]["group_by"]
-        if split_mode == "RS":
+
+        # when unlearning we do not want any splits, we only have the forget set as input
+        if self.unlearning:
+            if group_by is None or group_by.lower() == "none":
+                datasets = self.split_by_ratio([1.], group_by=None)
+            elif group_by == "user":
+                datasets = self.split_by_ratio(
+                    [1.], group_by=self.uid_field
+                )
+            else:
+                raise NotImplementedError(
+                    f"The grouping method [{group_by}] has not been implemented."
+                )
+            return datasets
+        elif split_mode == "RS":
             if not isinstance(split_args["RS"], list):
                 raise ValueError(f'The value of "RS" [{split_args}] should be a list.')
             if group_by is None or group_by.lower() == "none":

@@ -8,12 +8,34 @@ load_col:
   inter: [userId, movieId, rating, timestamp]
 
 
+train_neg_sample_args:
+  distribution: uniform
+  sample_num: 1
+
 eval_args:
   group_by: user
   order: TO
-  split: {RS: [0.8, 0.1, 0.1]}
+  split: {LS: 'valid_and_test'}
+  mode: full
+  metrics: [Recall, NDCG, Hit, MRR]
+  topk: [10, 20]
+  valid_metric: Recall@20
 
 use_gpu: True
 gpu_id: 0
 show_progress: True
-epochs: 1
+epochs: 100
+n_layers: 2
+loss: bpr
+weight_decay: 0.0
+reg_weight: 1e-4
+learning_rate: 1e-3
+learner: adam
+early_stop: True
+show_progress: True
+
+
+# eval_args:
+#   group_by: user
+#   order: TO
+#   split: {RS: [0.8, 0.1, 0.1]}

@@ -1,45 +1,56 @@
+# Dataset fields
 USER_ID_FIELD: userId
 ITEM_ID_FIELD: movieId
 RATING_FIELD: rating
 TIME_FIELD: timestamp
 
-# dataset: goodreads
-
 load_col:
   inter: [userId, movieId, rating, timestamp]
 
+# Evaluation
 eval_args:
   group_by: user
   order: TO
   split: {RS: [0.8, 0.1, 0.1]}
 
+# Runtime
 use_gpu: True
 gpu_id: 0
 show_progress: True
 
-MODEL_INPUT_TYPE: pairwise
+# Input mode for SimRec’s teacher/student architecture
+# (SimRec uses InputType.POINTWISE internally; no need for MODEL_INPUT_TYPE)
 
+# Embedding & layer sizes
 embedding_size: 64
+teacher_n_layers: 2      # used to set LightGCN’s depth
+student_n_layers: 1      # used in MLP input size
 
-teacher_n_layers: 2
-student_n_layers: 1
-
+# L2 regularization
 reg_weight_teacher: 1e-5
 reg_weight_student: 1e-5
 
-# Distillation strengths
+# Distillation strengths (λ)
 lambda_pred_distill: 1.0
 lambda_emb_distill: 1.0
 lambda_contrast_reg: 0.1
 
-# Distillation temperatures
+# Distillation temperatures (τ)
 temp_pred_distill: 1.0
 temp_emb_distill: 1.0
 temp_contrast_reg: 1.0
 
+# Freeze the teacher LightGCN
 freeze_teacher: true
 
-# others
+# --- NEW: Cold-start similarity settings ---
+similarity_indices_file: path/to/beauty-similarity.pt   # required to load your precomputed sims 
+similarity_threshold: 0.9       # zero out small sims 
+similarity_temperature: 0.5     # softmax temperature for sim distribution 
+similarity_lambda: 0.3          # weight for the sim‑based cross‑entropy loss 
+
+# Training hyperparameters
 epochs: 1
 learning_rate: 1e-3
 train_batch_size: 2048
+

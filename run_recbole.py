@@ -55,6 +55,25 @@ if __name__ == "__main__":
         default=None,
         help="random seed to set, when not None"
     )
+    parser.add_argument(
+        "--unlearning_fraction",
+        type=float,
+        default=None,
+        help="percentage of training data to unlearn"
+    )
+    parser.add_argument(
+        "--unlearning_sample_selection_method",
+        type=str,
+        default=None,
+        choices=["random", "popular", "unpopular"],
+        help="how should the forget set be chosen (what type of interactions appear there)"
+    )
+    parser.add_argument(
+        "--retrain_checkpoint_idx_to_match",
+        type=int,
+        default=None,
+        help="checkpoint index of the users to unlearn, when not None"
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -65,6 +84,14 @@ if __name__ == "__main__":
         args.config_files.strip().split(" ") if args.config_files else None
     )
 
+    config_dict = {
+        "dataset": args.dataset,
+        "unlearning_fraction": args.unlearning_fraction,
+        "unlearning_sample_selection_method": args.unlearning_sample_selection_method,
+        "model": args.model,
+        "retrain_checkpoint_idx_to_match": args.retrain_checkpoint_idx_to_match,
+    }
+
     run(
         args.model,
         args.dataset,
@@ -74,4 +101,9 @@ if __name__ == "__main__":
         ip=args.ip,
         port=args.port,
         group_offset=args.group_offset,
+        retrain_flag=(args.retrain_checkpoint_idx_to_match is not None),
+        unlearning_fraction=args.unlearning_fraction,
+        unlearning_sample_selection_method=args.unlearning_sample_selection_method,
+        retrain_checkpoint_idx_to_match=args.retrain_checkpoint_idx_to_match,
+        config_dict=config_dict,
     )

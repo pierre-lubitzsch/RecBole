@@ -4,4 +4,5 @@ from recbole.quick_start.quick_start import (
     objective_function,
     load_data_and_model,
     run_recboles,
+    unlearn_recbole,
 )

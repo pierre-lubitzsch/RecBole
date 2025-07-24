@@ -11,8 +11,8 @@ eval_args:
   order: TO
   split: {RS: [0.8, 0.1, 0.1]}
 
-use_gpu: True
-gpu_id: 0
+use_gpu: False
+gpu_id: ""
 show_progress: True
 
 MODEL_INPUT_TYPE: pointwise

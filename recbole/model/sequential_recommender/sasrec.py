@@ -106,10 +106,12 @@ class SASRec(SequentialRecommender):
 
         extended_attention_mask = self.get_attention_mask(item_seq)
 
+        # changed output_all_encoded_layers to False, as before only the last layer output was taken
         trm_output = self.trm_encoder(
-            input_emb, extended_attention_mask, output_all_encoded_layers=True
+            input_emb, extended_attention_mask, output_all_encoded_layers=False
         )
-        output = trm_output[-1]
+        #output = trm_output[-1]
+        output = trm_output
         output = self.gather_indexes(output, item_seq_len - 1)
         return output  # [B H]
 

@@ -71,6 +71,108 @@ class TrainDataLoader(NegSampleDataLoader):
         return self._neg_sampling(transformed_data)
 
 
+
+class UnlearnTrainDataLoader(NegSampleDataLoader):
+    """:class:`UnlearnTrainDataLoader` yields, on each __next__(), **all** positive interactions of one user,
+    then applies RecBole’s sequential transform (sliding‐window), without any negative sampling.
+
+    There are two possible “dataset” inputs:
+
+      1. A RecBole `Dataset` whose `.inter_feat` has already been filtered to contain only 
+         the “unlearning” rows. In that case, we slice `dataset.inter_feat` directly.
+
+      2. A RecBole `Interaction` (which already holds exactly the rows to unlearn) — in which case 
+         we slice it by row‐index (via `interaction[indices]`) and call `to_dict()`.
+
+    In both cases, after building a “raw” Interaction of shape [(num_rows_for_user,) for each field],
+    we call `self.transform(...)` to produce the sliding‐window inputs and labels. Finally,
+    we do `_neg_sampling(...)`, which is a no-op if `train_neg_sample_args: None`.
+
+    Args:
+        config (Config):    RecBole config (must have train_neg_sample_args: None).
+        dataset (Dataset or Interaction):
+            - If it has `.inter_feat`, we treat it as a full Dataset.
+            - Otherwise we treat it as an Interaction.
+        sampler (Sampler):  Ignored (we never use it in unlearning mode).
+        shuffle (bool):     If True, randomize the user order each epoch.
+    """
+
+    def __init__(self, config, dataset, sampler=None, shuffle=False):
+        # 1) Neg‐sampling setup (copied from RecBole). We assume train_neg_sample_args=None.
+        self.logger = getLogger()
+        self._set_neg_sample_args(
+            config,
+            dataset,
+            config["MODEL_INPUT_TYPE"],
+            config["train_neg_sample_args"],
+        )
+        # Although AbstractDataLoader expects `sample_size`, we will bypass its ``batch_size/step`` logic.
+        self.sample_size = len(dataset)
+
+        # 2) Call parent constructor → calls _init_batch_size_and_step() internally
+        super().__init__(config, dataset, sampler=None, shuffle=shuffle)
+
+        # 3) Remember which column is the user ID
+        self.uid_field = dataset.uid_field
+
+
+        all_uids = dataset.inter_feat[self.uid_field].numpy()
+
+        user2indices = {}
+        for row_idx, u in enumerate(all_uids):
+            uid = int(u)
+            user2indices.setdefault(uid, []).append(row_idx)
+
+        self.user2indices = user2indices
+        self.users = list(self.user2indices.keys())
+
+        # 5) A pointer through self.users
+        self._pointer = 0
+        self.shuffle = shuffle
+
+    def _init_batch_size_and_step(self):
+        # AbstractDataLoader requires this stub, but we never use batch_size/step.
+        self.step = 1
+        self._batch_size = 1
+
+    def __len__(self):
+        return len(self.users)
+
+    def __iter__(self):
+        # At epoch start, optionally shuffle user order, then reset pointer
+        if self.shuffle:
+            np.random.shuffle(self.users)
+        self._pointer = 0
+        return self
+
+    def __next__(self):
+        if self._pointer >= len(self.users):
+            raise StopIteration
+
+        curr_uid = self.users[self._pointer]
+        indices = self.user2indices[curr_uid]  # list of row‐indices for this user
+        
+        # ─── Step A: Build a “raw” Interaction of all rows for curr_uid ───
+
+        raw_array = self._dataset.inter_feat
+        raw_data = {
+            field_name: torch.tensor(raw_array[field_name][indices])
+            for field_name in self._dataset.field2type.keys()
+        }
+        raw_inter = Interaction(raw_data)
+
+        # ─── Step B: Apply RecBole’s sequential transform (sliding‐window augmentation) ───
+        # This generates new fields like `item_id_list` (shape [num_windows × max_seq_len]),
+        # `label` (shape [num_windows]), `timestamp_list`, etc., according to your config["max_seq_len"].
+        seq_inter = self.transform(self._dataset, raw_inter)
+
+        # ─── Step C: Negative sampling (no-op if train_neg_sample_args=None) ───
+        batch_inter = self._neg_sampling(seq_inter)
+
+        self._pointer += 1
+        return batch_inter
+
+
 class NegSampleEvalDataLoader(NegSampleDataLoader):
     """:class:`NegSampleEvalDataLoader` is a dataloader for neg-sampling evaluation.
     It is similar to :class:`TrainDataLoader` which can generate negative items,

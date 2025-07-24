@@ -25,7 +25,7 @@ from recbole.utils import ModelType, ensure_dir, get_local_time, set_color
 from recbole.utils.argument_list import dataset_arguments
 
 
-def create_dataset(config):
+def create_dataset(config, unlearning=False):
     """Create dataset according to :attr:`config['model']` and :attr:`config['MODEL_TYPE']`.
     If :attr:`config['dataset_save_path']` file exists and
     its :attr:`config` of dataset is equal to current :attr:`config` of dataset.
@@ -69,7 +69,7 @@ def create_dataset(config):
             logger.info(set_color("Load filtered dataset from", "pink") + f": [{file}]")
             return dataset
 
-    dataset = dataset_class(config)
+    dataset = dataset_class(config, unlearning=unlearning)
     if config["save_dataset"]:
         dataset.save()
     return dataset
@@ -141,7 +141,7 @@ def load_split_dataloaders(config):
     return train_data, valid_data, test_data
 
 
-def data_preparation(config, dataset):
+def data_preparation(config, dataset, unlearning=False):
     """Split the dataset by :attr:`config['[valid|test]_eval_args']` and create training, validation and test dataloader.
 
     Note:
@@ -157,22 +157,30 @@ def data_preparation(config, dataset):
             - valid_data (AbstractDataLoader): The dataloader for validation.
             - test_data (AbstractDataLoader): The dataloader for testing.
     """
-    dataloaders = load_split_dataloaders(config)
+    dataloaders = load_split_dataloaders(config) if not unlearning else None
     if dataloaders is not None:
         train_data, valid_data, test_data = dataloaders
         dataset._change_feat_format()
     else:
         model_type = config["MODEL_TYPE"]
         built_datasets = dataset.build()
-
-        train_dataset, valid_dataset, test_dataset = built_datasets
-        train_sampler, valid_sampler, test_sampler = create_samplers(
-            config, dataset, built_datasets
-        )
+        if unlearning:
+            train_dataset = built_datasets[0]
+        else:
+            train_dataset, valid_dataset, test_dataset = built_datasets
+        
+        if unlearning:
+            train_sampler = create_samplers(
+                config, dataset, built_datasets
+            )
+        else:
+            train_sampler, valid_sampler, test_sampler = create_samplers(
+                config, dataset, built_datasets
+            )
 
         if model_type != ModelType.KNOWLEDGE:
-            train_data = get_dataloader(config, "train")(
-                config, train_dataset, train_sampler, shuffle=config["shuffle"]
+            train_data = get_dataloader(config, "train", unlearning=unlearning)(
+                config, train_dataset, train_sampler, shuffle=config["shuffle"],
             )
         else:
             kg_sampler = KGSampler(
@@ -184,20 +192,22 @@ def data_preparation(config, dataset):
                 config, train_dataset, train_sampler, kg_sampler, shuffle=True
             )
 
-        valid_data = get_dataloader(config, "valid")(
-            config, valid_dataset, valid_sampler, shuffle=False
-        )
-        test_data = get_dataloader(config, "test")(
-            config, test_dataset, test_sampler, shuffle=False
-        )
-        if config["save_dataloaders"]:
-            save_split_dataloaders(
-                config, dataloaders=(train_data, valid_data, test_data)
+        if not unlearning:
+            valid_data = get_dataloader(config, "valid")(
+                config, valid_dataset, valid_sampler, shuffle=False
             )
+            test_data = get_dataloader(config, "test")(
+                config, test_dataset, test_sampler, shuffle=False
+            )
+            if config["save_dataloaders"]:
+                save_split_dataloaders(
+                    config, dataloaders=(train_data, valid_data, test_data)
+                )
 
     logger = getLogger()
     logger.info(
-        set_color("[Training]: ", "pink")
+        f"Unlearning: {unlearning}\n"
+        + set_color("[Training]: ", "pink")
         + set_color("train_batch_size", "cyan")
         + " = "
         + set_color(f'[{config["train_batch_size"]}]', "yellow")
@@ -214,10 +224,10 @@ def data_preparation(config, dataset):
         + ": "
         + set_color(f'[{config["eval_args"]}]', "yellow")
     )
-    return train_data, valid_data, test_data
+    return (train_data, valid_data, test_data) if not unlearning else train_data
 
 
-def get_dataloader(config, phase: Literal["train", "valid", "test", "evaluation"]):
+def get_dataloader(config, phase: Literal["train", "valid", "test", "evaluation"], unlearning=False):
     """Return a dataloader class according to :attr:`config` and :attr:`phase`.
 
     Args:
@@ -256,7 +266,7 @@ def get_dataloader(config, phase: Literal["train", "valid", "test", "evaluation"
     model_type = config["MODEL_TYPE"]
     if phase == "train":
         if model_type != ModelType.KNOWLEDGE:
-            return TrainDataLoader
+            return TrainDataLoader if not unlearning else UnlearnTrainDataLoader
         else:
             return KnowledgeBasedDataLoader
     else:
@@ -357,6 +367,9 @@ def create_samplers(config, dataset, built_datasets):
         train_neg_sample_args["alpha"],
     )
     train_sampler = base_sampler.set_phase("train") if base_sampler else None
+
+    if dataset.unlearning:
+        return train_sampler
 
     valid_sampler = _create_sampler(
         dataset,
