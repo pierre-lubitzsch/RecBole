@@ -100,12 +100,13 @@ class Dataset(torch.utils.data.Dataset):
         feat_name_list (list): A list contains all the features' name (:class:`str`), including additional features.
     """
 
-    def __init__(self, config, unlearning=False):
+    def __init__(self, config, unlearning=False, spam=False):
         super().__init__()
         self.config = config
         self.dataset_name = config["dataset"]
         self.logger = getLogger()
         self.unlearning = unlearning
+        self.spam = spam
         self._from_scratch()
 
     def _from_scratch(self):
@@ -266,8 +267,15 @@ class Dataset(torch.utils.data.Dataset):
         """
         if not os.path.exists(dataset_path):
             self._download()
-        if self.unlearning:
-            token += f"_unlearn_pairs_{self.config['unlearning_sample_selection_method']}_seed_{self.config['unlearn_sample_selection_seed']}_unlearning_fraction_{float(self.config['unlearning_fraction'])}"
+        # for spam unlearning we do not load the original dataset to train the models originally, but the dataset including spam sessions
+        if self.spam:
+            if self.unlearning:
+                token += f"_spam_sessions_dataset_{self.config['dataset']}_unlearning_fraction_{self.config['unlearning_fraction']}_n_target_items_{self.config['n_target_items']}_seed_{self.config['unlearn_sample_selection_seed']}"
+            else:
+                token += f"_with_spam_dataset_{self.config['dataset']}_unlearning_fraction_{self.config['unlearning_fraction']}_n_target_items_{self.config['n_target_items']}_seed_{self.config['unlearn_sample_selection_seed']}"
+        else:
+            if self.unlearning:
+                token += f"_unlearn_pairs_{self.config['unlearning_sample_selection_method']}_seed_{self.config['unlearn_sample_selection_seed']}_unlearning_fraction_{float(self.config['unlearning_fraction'])}"
         print(token)
         self._load_inter_feat(token, dataset_path)
         self.user_feat = self._load_user_or_item_feat(

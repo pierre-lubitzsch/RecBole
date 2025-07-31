@@ -40,6 +40,8 @@ import pandas as pd
 import os
 import torch
 import numpy as np
+import gc
+import time
 
 def run(
     model,
@@ -56,6 +58,7 @@ def run(
     unlearning_fraction=None,
     unlearning_sample_selection_method=None,
     retrain_checkpoint_idx_to_match=None,
+    spam=False,
 ):
     if nproc == 1 and world_size <= 0:
         res = run_recbole(
@@ -68,6 +71,7 @@ def run(
             unlearning_fraction=unlearning_fraction,
             unlearning_sample_selection_method=unlearning_sample_selection_method,
             retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
+            spam=spam,
         )
     else:
         if world_size == -1:
@@ -116,6 +120,7 @@ def run_recbole(
     unlearning_fraction=None,
     unlearning_sample_selection_method=None,
     retrain_checkpoint_idx_to_match=None,
+    spam=False,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -143,19 +148,25 @@ def run_recbole(
     logger.info(config)
 
     # dataset filtering
-    dataset = create_dataset(config)
+    dataset = create_dataset(config, unlearning=False, spam=spam)
 
     print("original dataset")
     logger.info(dataset)
 
     if retrain_flag:
         # remove unlearned interactions
-        unlearning_samples_path = os.path.join(
-            config["data_path"],
-            f"{config['dataset']}_unlearn_pairs_{config['unlearning_sample_selection_method']}"
-            f"_seed_{config['unlearn_sample_selection_seed']}"
-            f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
-        )
+        if "spam" in config and config["spam"]:
+            unlearning_samples_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+            )
+        else:
+            unlearning_samples_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_unlearn_pairs_{config['unlearning_sample_selection_method']}"
+                f"_seed_{config['unlearn_sample_selection_seed']}"
+                f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
+            )
 
         unlearning_samples = pd.read_csv(
             unlearning_samples_path,
@@ -185,14 +196,13 @@ def run_recbole(
             mask = np.isin(item_ids[all_idx], forget_items)
             removed_mask[all_idx[~mask]] = True
 
-
         dataset = dataset.copy(dataset.inter_feat[~removed_mask])
 
-    print("retain dataset")
-    logger.info(dataset)
+        print("retain dataset")
+        logger.info(dataset)
 
     # dataset splitting
-    train_data, valid_data, test_data = data_preparation(config, dataset)
+    train_data, valid_data, test_data = data_preparation(config, dataset, spam=spam)
 
     # model loading and initialization
     init_seed(config["seed"] + config["local_rank"], config["reproducibility"])
@@ -213,7 +223,6 @@ def run_recbole(
         saved=saved,
         show_progress=config["show_progress"],
         retrain_flag=retrain_flag,
-        unlearning_fraction=unlearning_fraction,
     )
 
     # model evaluation
@@ -257,6 +266,8 @@ def unlearn_recbole(
     unlearning_algorithm="scif",
     max_norm=None,
     base_model_path=None,
+    kookmin_init_rate=0.01,
+    spam=False,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -277,6 +288,8 @@ def unlearn_recbole(
         config_file_list=config_file_list,
         config_dict=config_dict,
     )
+    # different batch_size for unlearning
+    config["train_batch_size"] = 256
     init_seed(config["seed"], config["reproducibility"])
     # logger initialization
     init_logger(config)
@@ -284,18 +297,25 @@ def unlearn_recbole(
     logger.info(sys.argv)
     logger.info(config)
 
-    dataset = create_dataset(config)
+    dataset = create_dataset(config, unlearning=False, spam=spam)
     # save orig_df for forget set creation because inter_feat gets converted to torch during dataset.build()
     orig_inter_df = dataset.inter_feat.copy()
     removed_mask = np.zeros(len(orig_inter_df), dtype=bool)
     logger.info(dataset)
 
-    unlearning_samples_path = os.path.join(
-        config["data_path"],
-        f"{config['dataset']}_unlearn_pairs_{config['unlearning_sample_selection_method']}"
-        f"_seed_{config['unlearn_sample_selection_seed']}"
-        f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
-    )
+    if spam:
+        unlearning_samples_path = os.path.join(
+            config["data_path"],
+            f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+        )
+
+    else:
+        unlearning_samples_path = os.path.join(
+            config["data_path"],
+            f"{config['dataset']}_unlearn_pairs_{config['unlearning_sample_selection_method']}"
+            f"_seed_{config['unlearn_sample_selection_seed']}"
+            f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
+        )
 
     print("loaded dataset")
 
@@ -309,33 +329,12 @@ def unlearn_recbole(
     print("loaded unlearning samples")
 
     uid_field, iid_field = dataset.uid_field, dataset.iid_field
-    # uid_vec, iid_vec = dataset.inter_feat[uid_field], dataset.inter_feat[iid_field]
-
-    # uid_arr = torch.as_tensor(
-    #     dataset.inter_feat[uid_field].to_numpy(),
-    #     dtype=torch.long,
-    #     device=config['device'])
-
-    # iid_arr = torch.as_tensor(
-    #     dataset.inter_feat[iid_field].to_numpy(),
-    #     dtype=torch.long,
-    #     device=config['device'])
 
     user_ids = dataset.inter_feat[uid_field].to_numpy()
     item_ids = dataset.inter_feat[iid_field].to_numpy()
 
     print("created user and item ids")
 
-    # retain_mask = torch.ones(len(uid_arr), dtype=torch.bool, device=uid_arr.device)
-    
-    # pairs_by_user = (unlearning_samples
-    #              .groupby('user_id')['item_id']
-    #              .agg(list)
-    #              .to_dict())
-
-    # rows_by_u = {
-    #     int(u): torch.where(uid_arr == u)[0].cpu().numpy() for u in pairs_by_user.keys()
-    # }
     
     rows_by_user = dict()
 
@@ -358,21 +357,29 @@ def unlearn_recbole(
     logger.info(model)
 
     # trainer loading and initialization
+    # scale down the lr for non-reset params (which are the majority) during training we will scale the lr for the reset params to the normal value
+    if unlearning_algorithm == "kookmin":
+        config["learning_rate"] *= 0.1
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
 
     train_data, valid_data, test_data = data_preparation(
-        config, dataset
+        config, dataset, spam=spam,
     )
 
     unlearned_users_before = []
 
     # checkpoint after every quarter of the total user requests
     unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
-    eval_files = [f"{trainer.saved_model_file[:len('.pth')]}_unlearn_epoch_{e}.pth" for e in unlearning_checkpoints]
+    eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
     eval_masks = []
+    retrain_checkpoint_idx_to_match = 0
+
+    unlearning_times = []
+    total_start_time = time.time()
 
     for unlearn_request_idx, (u, forget_items) in enumerate(sorted(pairs_by_user.items())):
-        print(f"Unlearning request {unlearn_request_idx + 1} for user {u}\n")
+        print(f"Unlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
+        request_start_time = time.time()
 
         unlearned_users_before.append(u)
 
@@ -389,8 +396,8 @@ def unlearn_recbole(
             orig_inter_df.iloc[all_idx[~mask]]
         )
 
-        forget_data = data_preparation(config, cur_forget_ds, unlearning=True)
-        clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True)
+        forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam)
+        clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam)
 
         # model training
         saved = unlearn_request_idx in unlearning_checkpoints
@@ -403,24 +410,45 @@ def unlearn_recbole(
             retain_test_data=test_data,
             unlearning_algorithm=unlearning_algorithm,
             saved=saved,
-            show_progress=False,#config["show_progress"]
+            show_progress=False,#config["show_progress"] no progress bar during unlearning as it is short either way. measure time otherwise using start and end time
             max_norm=max_norm,
             unlearned_users_before=unlearned_users_before,
+            kookmin_init_rate=kookmin_init_rate,
+            retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
         )
+
+        request_end_time = time.time()
+        request_time = request_end_time - request_start_time
+        unlearning_times.append(request_time)
+
+        print(f"Request {unlearn_request_idx + 1} completed in {request_time:.2f} seconds")
 
         if saved:
             eval_mask = removed_mask.copy()
             eval_masks.append(eval_mask)
+            retrain_checkpoint_idx_to_match += 1
         
         sys.stdout.flush()
 
+    gc.collect()
+
+    total_end_time = time.time()
+    total_unlearning_time = total_end_time - total_start_time
+
+    print(f"\nUnlearning Time Summary")
+    print(f"Total unlearning time: {total_unlearning_time:.2f} seconds ({total_unlearning_time/60:.2f} minutes)")
+    print(f"Average time per request: {np.mean(unlearning_times):.2f} seconds")
+    print(f"Min time per request: {np.min(unlearning_times):.2f} seconds")
+    print(f"Max time per request: {np.max(unlearning_times):.2f} seconds")
+    print(f"Total requests processed: {len(unlearning_times)}")
 
     # eval
     results = []
     for file, mask in zip(eval_files, eval_masks):
+        print(f"Evaluating model {file}\n")
         cur_eval_df = orig_inter_df.loc[~mask]
         cur_eval_dataset = dataset.copy(cur_eval_df)
-        _, _, cur_test_data = data_preparation(config, cur_eval_dataset)
+        _, _, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam)
 
         test_result = trainer.evaluate(
             cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
@@ -431,6 +459,9 @@ def unlearn_recbole(
             "test_result": test_result,
         }
         results.append(result)
+
+        print(result)
+        print("\n\n")
     
     return results
         
@@ -511,9 +542,9 @@ def load_data_and_model(model_file):
     logger = getLogger()
     logger.info(config)
 
-    dataset = create_dataset(config)
+    dataset = create_dataset(config, unlearning=False, spam=config["spam"])
     logger.info(dataset)
-    train_data, valid_data, test_data = data_preparation(config, dataset)
+    train_data, valid_data, test_data = data_preparation(config, dataset, spam=config["spam"])
 
     init_seed(config["seed"], config["reproducibility"])
     model = get_model(config["model"])(config, train_data._dataset).to(config["device"])

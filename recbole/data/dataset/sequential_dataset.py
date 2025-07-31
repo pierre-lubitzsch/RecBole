@@ -30,10 +30,10 @@ class SequentialDataset(Dataset):
         item_list_length_field (str): Field name for item lists' length.
     """
 
-    def __init__(self, config, unlearning=False):
+    def __init__(self, config, unlearning=False, spam=False):
         self.max_item_list_len = config["MAX_ITEM_LIST_LENGTH"]
         self.item_list_length_field = config["ITEM_LIST_LENGTH_FIELD"]
-        super().__init__(config, unlearning=unlearning)
+        super().__init__(config, unlearning=unlearning, spam=spam)
         if config["benchmark_filename"] is not None:
             self._benchmark_presets()
 

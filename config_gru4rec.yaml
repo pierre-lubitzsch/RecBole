@@ -22,5 +22,3 @@ dataset: rsc15
 
 # 1 recurrent gru layer
 n_layers: 1
-unlearn_sample_selection_seed: 2
-unlearning_algorithm: scif

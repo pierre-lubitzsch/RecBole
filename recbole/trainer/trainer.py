@@ -131,12 +131,20 @@ class Trainer(AbstractTrainer):
         self.enable_amp = config["enable_amp"]
         self.enable_scaler = torch.cuda.is_available() and config["enable_scaler"]
         ensure_dir(self.checkpoint_dir)
-        if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin"]:
-            saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_algorithm_{config['unlearning_algorithm']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
-        elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
-            saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_retrain_checkpoint_idx_to_match_{config['retrain_checkpoint_idx_to_match']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
+        if "spam" in config and config["spam"]:
+            if ("unlearning_algorithm" not in config or config["unlearning_algorithm"] is None) and ("retrain_checkpoint_idx_to_match" not in config or config["retrain_checkpoint_idx_to_match"] is None):
+                saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_best.pth"
+            elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
+                saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_retrain_checkpoint_idx_to_match_{config['retrain_checkpoint_idx_to_match']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}.pth"
+            else:
+                saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_unlearning_algorithm_{config['unlearning_algorithm']}.pth"
         else:
-            saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_best.pth"
+            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin"]:
+                saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_algorithm_{config['unlearning_algorithm']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
+            elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
+                saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_retrain_checkpoint_idx_to_match_{config['retrain_checkpoint_idx_to_match']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
+            else:
+                saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_best.pth"
         self.saved_model_file = os.path.join(self.checkpoint_dir, saved_model_file)
         self.weight_decay = config["weight_decay"]
 
@@ -151,6 +159,7 @@ class Trainer(AbstractTrainer):
         self.evaluator = Evaluator(config)
         self.item_tensor = None
         self.tot_item_num = None
+
 
     def _build_optimizer(self, **kwargs):
         r"""Init the Optimizer
@@ -207,7 +216,7 @@ class Trainer(AbstractTrainer):
             optimizer = optim.Adam(params, lr=learning_rate)
         return optimizer
 
-    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
         r"""Train the model in an epoch
 
         Args:
@@ -241,6 +250,10 @@ class Trainer(AbstractTrainer):
 
         scaler = amp.GradScaler(enabled=self.enable_scaler)
         for batch_idx, interaction in enumerate(iter_data):
+            if retain_samples_used_for_update is not None and retain_samples_used_for_update <= 0:
+                break
+            if retain_samples_used_for_update is not None:
+                interaction = interaction[:retain_samples_used_for_update]
             interaction = interaction.to(self.device)
             self.optimizer.zero_grad()
             sync_loss = 0
@@ -273,6 +286,13 @@ class Trainer(AbstractTrainer):
             scaler.scale(loss + sync_loss).backward()
             if self.clip_grad_norm:
                 clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
+
+            # scale for re-initialized parameters in kookmin retain round
+            if reinit_masks is not None:
+                for p in reinit_masks:
+                    if p.grad is not None:
+                        p.grad[reinit_masks[p]] *= scale_for_reinit_params
+                        
             scaler.step(self.optimizer)
             scaler.update()
             if self.gpu_available and show_progress:
@@ -281,6 +301,9 @@ class Trainer(AbstractTrainer):
                 )
 
             torch.cuda.empty_cache()
+
+            if retain_samples_used_for_update is not None:
+                retain_samples_used_for_update -= len(interaction)
 
         return total_loss
 
@@ -311,8 +334,9 @@ class Trainer(AbstractTrainer):
         if not self.config["single_spec"] and self.config["local_rank"] != 0:
             return
         saved_model_file = kwargs.pop("saved_model_file", self.saved_model_file)
+
         if "unlearn" in saved_model_file:
-            saved_model_file = f"{saved_model_file[:len('.pth')]}_unlearn_epoch_{epoch}.pth"
+            saved_model_file = f"{saved_model_file[:-len('.pth')]}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{retrain_checkpoint_idx_to_match}.pth"
         state = {
             "config": self.config,
             "epoch": epoch,
@@ -417,6 +441,151 @@ class Trainer(AbstractTrainer):
         self.tensorboard.add_hparams(
             hparam_dict, {"hparam/best_valid_result": best_valid_result}
         )
+
+    def move_optimizer_state(self, optimizer, device):
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+
+    def _reset_adam_state(self, opt, params):
+        for p in params:
+            if p in opt.state:
+                opt.state[p]['step'] = torch.zeros(1, dtype=torch.float32, device=p.device)
+                opt.state[p]['exp_avg'].zero_()
+                opt.state[p]['exp_avg_sq'].zero_()
+
+    def kookmin(
+        self,
+        epoch_idx,
+        forget_data,
+        clean_forget_data,
+        retain_train_data,
+        retain_valid_data=None,
+        retain_test_data=None,
+        show_progress=False,
+        unlearned_users_before=None,
+        kookmin_init_rate=0.01,
+        saved=True,
+        verbose=False,
+        retain_samples_used_for_update=32,
+        neg_grad_retain_sample_size=128,
+        param_list=None,
+    ):
+        self.move_optimizer_state(self.optimizer, self.device)
+        self.model.train()
+        loss_func = self.model.calculate_loss
+        grads_forget = []
+        grads_retain = []
+
+        for batch_idx, interaction in enumerate(forget_data):
+            interaction = interaction.to(self.device)
+            cur_grads = self._batch_grad(
+                self.model,
+                interaction,
+                param_list,
+                loss_func,
+                average_scale=neg_grad_retain_sample_size,
+            )
+            if len(grads_forget) == 0:
+                grads_forget = [g for g in cur_grads]
+            else:
+                for i in range(len(cur_grads)):
+                    grads_forget[i] += cur_grads[i]
+
+        for batch_idx, interaction in enumerate(clean_forget_data):
+            interaction = interaction.to(self.device)
+            cur_grads = self._batch_grad(
+                self.model,
+                interaction,
+                param_list,
+                loss_func,
+                average_scale=neg_grad_retain_sample_size,
+            )
+            if len(grads_retain) == 0:
+                grads_retain = [g for g in cur_grads]
+            else:
+                for i in range(len(cur_grads)):
+                    grads_retain[i] += cur_grads[i]
+        
+        k_more = max(0, neg_grad_retain_sample_size - len(clean_forget_data.dataset))
+
+        for batch_idx, interaction in enumerate(retain_train_data):
+            if k_more <= 0:
+                break
+            interaction = interaction[:k_more]
+            interaction = interaction.to(self.device)
+            cur_grads = self._batch_grad(
+                self.model,
+                interaction,
+                param_list,
+                loss_func,
+                average_scale=neg_grad_retain_sample_size,
+            )
+            if len(grads_retain) == 0:
+                grads_retain = [g for g in cur_grads]
+            else:
+                for i in range(len(cur_grads)):
+                    grads_retain[i] += cur_grads[i]
+
+        signed_grads = [gr - gf for gr, gf in zip(grads_retain, grads_forget)]
+
+        all_scores = torch.cat([g.abs().reshape(-1) for g in signed_grads])
+        total = all_scores.numel()
+        k = max(1, int(total * kookmin_init_rate))
+        thresh = all_scores.kthvalue(k).values.item()
+
+        reinit_masks = dict()
+
+        for p, g in zip(param_list, signed_grads):
+            mask = g.abs() <= thresh
+            if not mask.any():
+                continue
+
+            new_p = torch.empty_like(p.data, device=self.device)
+            if p.dim() == 4:            # e.g. Conv2d weight
+                torch.nn.init.kaiming_normal_(new_p, mode="fan_out", nonlinearity="relu")
+            elif p.dim() == 2:          # e.g. Linear weight
+                torch.nn.init.kaiming_uniform_(new_p, a=math.sqrt(5))
+            else:                       # embeddings, biases, ...
+                new_p.normal_(0, 0.02)
+
+            # overwrite only the “low-grad” slots
+            p.data = p.data.to(self.device)
+            p.data[mask] = new_p[mask]
+
+            # store the mask to use later
+            reinit_masks[p] = mask
+        
+        self._reset_adam_state(self.optimizer, list(reinit_masks.keys()))
+
+        self.model.zero_grad()
+        self.optimizer.zero_grad()
+
+        epochs = 1 + retain_samples_used_for_update // len(retain_train_data.dataset)
+
+        # retain round
+        for epoch_idx in range(epochs):
+            training_start_time = time()
+            train_loss = self._train_epoch(
+                retain_train_data, epoch_idx, show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update, reinit_masks=reinit_masks, scale_for_reinit_params=10,
+            )
+            self.train_loss_dict[epoch_idx] = (
+                sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+            )
+            training_end_time = time()
+            train_loss_output = self._generate_train_loss_output(
+                epoch_idx, training_start_time, training_end_time, train_loss
+            )
+            if verbose:
+                self.logger.info(train_loss_output)
+            self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
+            self.wandblogger.log_metrics(
+                {"epoch": epoch_idx, "train_loss": train_loss, "train_step": epoch_idx},
+                head="train",
+            )
+
+            
 
     def fit(
         self,
@@ -569,7 +738,7 @@ class Trainer(AbstractTrainer):
                 a /= average_scale
         return acc
 
-    def scif_epoch(
+    def scif(
         self,
         epoch_idx,
         forget_data=None,
@@ -868,6 +1037,8 @@ class Trainer(AbstractTrainer):
         callback_fn=None,
         max_norm=None,
         unlearned_users_before=None,
+        kookmin_init_rate=0.01,
+        retrain_checkpoint_idx_to_match=None,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -894,9 +1065,9 @@ class Trainer(AbstractTrainer):
 
         # for epoch_idx in range(self.start_epoch, self.epochs):
         #     # unlearn 1 epoch
+        training_start_time = time()
         if unlearning_algorithm == "scif":
-            training_start_time = time()
-            self.scif_epoch(
+            self.scif(
                 epoch_idx,
                 forget_data,
                 clean_forget_data,
@@ -907,9 +1078,27 @@ class Trainer(AbstractTrainer):
                 max_norm=max_norm,
                 unlearned_users_before=unlearned_users_before,
             )
-        
+        elif unlearning_algorithm == "kookmin":
+            retain_samples_used_for_update = 32 * len(forget_data.dataset)
+            neg_grad_retain_sample_size = 128 * len(forget_data.dataset)
+            param_list = [p for _, p in self.model.named_parameters()]
+            self.kookmin(
+                epoch_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data,
+                retain_valid_data,
+                retain_test_data,
+                show_progress=show_progress,
+                unlearned_users_before=unlearned_users_before,
+                kookmin_init_rate=kookmin_init_rate,
+                retain_samples_used_for_update=retain_samples_used_for_update,
+                neg_grad_retain_sample_size=neg_grad_retain_sample_size,
+                param_list=param_list,
+            )
+
         if saved:
-            self._save_checkpoint(epoch_idx, verbose=verbose)
+            self._save_checkpoint(epoch_idx, verbose=verbose, retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,)
             # self.train_loss_dict[epoch_idx] = (
             #     sum(train_loss) if isinstance(train_loss, tuple) else train_loss
             # )
@@ -1069,17 +1258,17 @@ class Trainer(AbstractTrainer):
         if self.config["eval_type"] == EvaluatorType.RANKING:
             self.tot_item_num = eval_data._dataset.item_num
 
-        # iter_data = (
-        #     tqdm(
-        #         eval_data,
-        #         total=len(eval_data),
-        #         ncols=100,
-        #         desc=set_color(f"Evaluate   ", "pink"),
-        #     )
-        #     if show_progress
-        #     else eval_data
-        # )
-        iter_data = eval_data
+        iter_data = (
+            tqdm(
+                eval_data,
+                total=len(eval_data),
+                ncols=100,
+                desc=set_color(f"Evaluate   ", "pink"),
+            )
+            if show_progress
+            else eval_data
+        )
+        # iter_data = eval_data
 
         num_sample = 0
         for batch_idx, batched_data in enumerate(iter_data):

@@ -74,6 +74,23 @@ if __name__ == "__main__":
         default=None,
         help="checkpoint index of the users to unlearn, when not None"
     )
+    parser.add_argument(
+        "--spam",
+        action="store_true",
+        help="flag if we are in the spam setting"
+    )
+    parser.add_argument(
+        "--n_target_items",
+        type=int,
+        default=10,
+        help="number of target items the attacker wants to boost in the spam setting"
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help="number of training epochs"
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -90,6 +107,11 @@ if __name__ == "__main__":
         "unlearning_sample_selection_method": args.unlearning_sample_selection_method,
         "model": args.model,
         "retrain_checkpoint_idx_to_match": args.retrain_checkpoint_idx_to_match,
+        "spam": args.spam,
+        "n_target_items": args.n_target_items,
+        "unlearn_sample_selection_seed": args.seed,
+        "seed": args.seed,
+        "epochs": args.epochs,
     }
 
     run(
@@ -106,4 +128,5 @@ if __name__ == "__main__":
         unlearning_sample_selection_method=args.unlearning_sample_selection_method,
         retrain_checkpoint_idx_to_match=args.retrain_checkpoint_idx_to_match,
         config_dict=config_dict,
+        spam=args.spam,
     )
