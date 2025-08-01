@@ -1,5 +1,4 @@
 use_gpu: True
-gpu_id: 0
 show_progress: True
 train_neg_sample_args: ~
 epochs: 100

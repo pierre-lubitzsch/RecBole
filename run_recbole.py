@@ -91,6 +91,12 @@ if __name__ == "__main__":
         default=100,
         help="number of training epochs"
     )
+    parser.add_argument(
+        "--gpu_id",
+        type=int,
+        default=0,
+        help="gpu to run on",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -112,6 +118,7 @@ if __name__ == "__main__":
         "unlearn_sample_selection_seed": args.seed,
         "seed": args.seed,
         "epochs": args.epochs,
+        "gpu_id": args.gpu_id,
     }
 
     run(
