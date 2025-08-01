@@ -133,6 +133,9 @@ def run_recbole(
         saved (bool, optional): Whether to save the model. Defaults to ``True``.
         queue (torch.multiprocessing.Queue, optional): The queue used to pass the result to the main process. Defaults to ``None``.
     """
+
+    total_start_time = time.time()
+
     # configurations initialization
     config = Config(
         model=model,
@@ -238,6 +241,11 @@ def run_recbole(
 
     logger.info(set_color("best valid ", "yellow") + f": {best_valid_result}")
     logger.info(set_color("test result", "yellow") + f": {test_result}")
+
+    total_end_time = time.time()
+    total_time = total_end_time - total_start_time
+
+    print(f"\nTotal execution time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
 
     result = {
         "best_valid_score": best_valid_score,
