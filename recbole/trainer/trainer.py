@@ -599,7 +599,7 @@ class Trainer(AbstractTrainer):
         model,
     ):
         self.optimizer.zero_grad()
-        item_seq = interaction[self.ITEM_SEQ]
+        item_seq = interaction[self.model.ITEM_SEQ]
         item_embedding = model.item_embedding(item_seq).reshape(1, -1)
 
         uniform_label = torch.ones_like(item_embedding, dtype=torch.float32, device=self.device) / item_seq.size(1)
@@ -618,10 +618,10 @@ class Trainer(AbstractTrainer):
     ):
         self.optimizer.zero_grad()
 
-        unlearn_item_seq = unlearn_interaction[self.ITEM_SEQ]
+        unlearn_item_seq = unlearn_interaction[self.model.ITEM_SEQ]
         unlearn_item_embeddings = model.item_embedding(unlearn_item_seq)
 
-        retain_item_seq = retain_interaction[self.ITEM_SEQ]
+        retain_item_seq = retain_interaction[self.model.ITEM_SEQ]
         retain_item_embeddings = model.item_embedding(retain_item_seq)
 
         t = 1.15
