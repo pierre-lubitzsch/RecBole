@@ -610,24 +610,33 @@ class Trainer(AbstractTrainer):
 
         return loss.item()
     
-    def unlearn_iterative_contrastive(
-        self,
-        unlearn_interaction,
-        retain_interaction,
-        model,
-    ):
+    def unlearn_iterative_contrastive(self, unlearn_interaction, retain_interaction, model):
         self.optimizer.zero_grad()
+        # for now this is correct for GRU4Rec, need to adapt to other models later
 
         unlearn_item_seq = unlearn_interaction[self.model.ITEM_SEQ]
+        unlearn_seq_len = unlearn_interaction[self.model.ITEM_SEQ_LEN]
         unlearn_item_embeddings = model.item_embedding(unlearn_item_seq)
 
         retain_item_seq = retain_interaction[self.model.ITEM_SEQ]
+        retain_seq_len = retain_interaction[self.model.ITEM_SEQ_LEN]
         retain_item_embeddings = model.item_embedding(retain_item_seq)
 
-        t = 1.15
-        loss = (-1 * torch.nn.LogSoftmax(dim=-1)(unlearn_item_embeddings @ retain_item_embeddings.T / t)).mean()
-        loss.backward()
+        # Get last valid item using sequence lengths
+        batch_idx = torch.arange(unlearn_item_seq.size(0), device=unlearn_item_seq.device)
+        
+        unlearn_last_pos = unlearn_seq_len - 1
+        retain_last_pos = retain_seq_len - 1
+        
+        # Extract last valid embeddings
+        unlearn_repr = unlearn_item_embeddings[batch_idx, unlearn_last_pos]  # [batch_size, embed_dim]
+        retain_repr = retain_item_embeddings[batch_idx, retain_last_pos]      # [batch_size, embed_dim]
 
+        t = 1.15
+        contrastive_similarity = unlearn_repr @ retain_repr.T / t
+        loss = (-1 * torch.nn.LogSoftmax(dim=-1)(contrastive_similarity)).mean()
+        
+        loss.backward()
         self.optimizer.step()
 
         return loss.item()
