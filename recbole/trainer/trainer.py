@@ -32,6 +32,7 @@ import torch.cuda.amp as amp
 from recbole.data.interaction import Interaction
 from recbole.data.dataloader import FullSortEvalDataLoader
 from recbole.evaluator import Evaluator, Collector
+from recbole.model import loss
 from recbole.utils import (
     ensure_dir,
     get_local_time,
@@ -134,9 +135,9 @@ class Trainer(AbstractTrainer):
         self.enable_scaler = torch.cuda.is_available() and config["enable_scaler"]
         ensure_dir(self.checkpoint_dir)
         if "spam" in config and config["spam"]:
-            if ("unlearning_algorithm" not in config or config["unlearning_algorithm"] is None) and ("retrain_checkpoint_idx_to_match" not in config or config["retrain_checkpoint_idx_to_match"] is None):
+            if ("unlearning_algorithm" not in config or config["unlearning_algorithm"] is None) and ("retrain_flag" not in config or not config["retrain_flag"]):
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_best.pth"
-            elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
+            elif "retrain_flag" in config and config["retrain_flag"] and config["retrain_checkpoint_idx_to_match"] is not None:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_retrain_checkpoint_idx_to_match_{config['retrain_checkpoint_idx_to_match']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}.pth"
             else:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_unlearning_algorithm_{config['unlearning_algorithm']}.pth"
@@ -587,7 +588,226 @@ class Trainer(AbstractTrainer):
                 head="train",
             )
 
+    def kl_loss_sym(self, x, y):
+        kl_loss = torch.nn.KLDivLoss(reduction='batchmean')
+        # kl_loss expects the first parameter to be model outputs as log probabilities and the target to be "normal" probabilities
+        return kl_loss(torch.log(x + 1e-20), y)
+
+    def unlearn_iterative_uniform_distribution(
+        self,
+        interaction,
+        model,
+    ):
+        self.optimizer.zero_grad()
+        item_seq = interaction[self.ITEM_SEQ]
+        item_embedding = model.item_embedding(item_seq).reshape(1, -1)
+
+        uniform_label = torch.ones_like(item_embedding, dtype=torch.float32, device=self.device) / item_seq.size(1)
+        loss = self.kl_loss_sym(item_embedding, uniform_label)
+        loss.backward()
+
+        self.optimizer.step()
+
+        return loss.item()
+    
+    def unlearn_iterative_contrastive(
+        self,
+        unlearn_interaction,
+        retain_interaction,
+        model,
+    ):
+        self.optimizer.zero_grad()
+
+        unlearn_item_seq = unlearn_interaction[self.ITEM_SEQ]
+        unlearn_item_embeddings = model.item_embedding(unlearn_item_seq)
+
+        retain_item_seq = retain_interaction[self.ITEM_SEQ]
+        retain_item_embeddings = model.item_embedding(retain_item_seq)
+
+        t = 1.15
+        loss = (-1 * torch.nn.LogSoftmax(dim=-1)(unlearn_item_embeddings @ retain_item_embeddings.T / t)).mean()
+        loss.backward()
+
+        self.optimizer.step()
+
+        return loss.item()
+
+    def _train_epoch_with_custom_indices(self, train_data, custom_indices, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
+        """Train the model in an epoch with custom data ordering"""
+        self.model.train()
+        loss_func = self.model.calculate_loss
+        total_loss = None
+        
+        batch_size = train_data.batch_size
+        
+        # Create batches using custom indices
+        custom_batches = []
+        for i in range(0, len(custom_indices), batch_size):
+            batch_indices = custom_indices[i:i + batch_size]
+            batch_data = train_data.dataset[batch_indices]
+            custom_batches.append(batch_data)
+        
+        iter_data = (
+            tqdm(custom_batches, total=len(custom_batches), ncols=100, desc=set_color(f"Train {epoch_idx:>5}", "pink"))
+            if show_progress else custom_batches
+        )
+
+        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        
+        for batch_idx, interaction in enumerate(iter_data):
+            if retain_samples_used_for_update is not None and retain_samples_used_for_update <= 0:
+                break
+            if retain_samples_used_for_update is not None:
+                interaction = interaction[:retain_samples_used_for_update]
+                
+            interaction = interaction.to(self.device)
+            self.optimizer.zero_grad()
+            sync_loss = 0
+            if not self.config["single_spec"]:
+                self.set_reduce_hook()
+                sync_loss = self.sync_grad_loss()
+
+            with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
+                losses = loss_func(interaction)
+
+            torch.cuda.empty_cache()
+
+            if isinstance(losses, tuple):
+                loss = sum(losses)
+                loss_tuple = tuple(per_loss.item() for per_loss in losses)
+                total_loss = (
+                    loss_tuple
+                    if total_loss is None
+                    else tuple(map(sum, zip(total_loss, loss_tuple)))
+                )
+            else:
+                loss = losses
+                total_loss = (
+                    losses.item() if total_loss is None else total_loss + losses.item()
+                )
             
+            self._check_nan(loss)
+
+            torch.cuda.empty_cache()
+
+            scaler.scale(loss + sync_loss).backward()
+            if self.clip_grad_norm:
+                clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
+
+            # scale for re-initialized parameters in kookmin retain round
+            if reinit_masks is not None:
+                for p in reinit_masks:
+                    if p.grad is not None:
+                        p.grad[reinit_masks[p]] *= scale_for_reinit_params
+                        
+            scaler.step(self.optimizer)
+            scaler.update()
+            if self.gpu_available and show_progress:
+                iter_data.set_postfix_str(
+                    set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
+                )
+
+            torch.cuda.empty_cache()
+
+            if retain_samples_used_for_update is not None:
+                retain_samples_used_for_update -= len(interaction)
+
+        return total_loss
+
+    def fanchuan(
+        self,
+        epoch_idx,
+        forget_data,
+        clean_forget_data,
+        retain_train_data,
+        retain_valid_data=None,
+        retain_test_data=None,
+        show_progress=False,
+        unlearned_users_before=None,
+        saved=True,
+        verbose=False,
+        retain_samples_used_for_update=32,
+        unlearn_iters_contrastive=8,
+    ):
+        self.move_optimizer_state(self.optimizer, self.device)
+        self.model.train()
+
+        # First stage: learn uniform pseudolabel
+        losses = []
+        for batch_idx, interaction in enumerate(forget_data):
+            interaction = interaction.to(self.device)
+            loss = self.unlearn_iterative_uniform_distribution(interaction, self.model)
+            losses.append(loss)
+        
+        print("Uniform pseudolabel learning average loss: ", np.mean(losses))
+
+        # Second stage: Contrastive learning between forget and retain data
+        for j in range(unlearn_iters_contrastive):
+            losses = []
+            
+            # Create different random indices for retain data for the contrastive learning loop
+            retain_indices_contrastive = np.random.permutation(len(retain_train_data.dataset))
+            
+            for batch_idx, (forget_interaction, clean_forget_interaction) in enumerate(zip(forget_data, clean_forget_data)):
+                # Get retain interaction using custom indices for contrastive learning
+                batch_size = retain_train_data.batch_size
+                start_idx = (batch_idx * batch_size) % len(retain_indices_contrastive)
+                end_idx = min(start_idx + batch_size, len(retain_indices_contrastive))
+                retain_batch_indices = retain_indices_contrastive[start_idx:end_idx]
+                
+                # If we need more samples, wrap around
+                if len(retain_batch_indices) < batch_size:
+                    remaining = batch_size - len(retain_batch_indices)
+                    retain_batch_indices = np.concatenate([
+                        retain_batch_indices, 
+                        retain_indices_contrastive[:remaining]
+                    ])
+                
+                retain_train_data_interaction = retain_train_data.dataset[retain_batch_indices]
+                
+                forget_interaction = forget_interaction.to(self.device)
+                clean_forget_interaction = clean_forget_interaction.to(self.device)
+                retain_interaction = retain_train_data_interaction.to(self.device)
+
+                loss = self.unlearn_iterative_contrastive(forget_interaction, clean_forget_interaction, self.model)
+                loss += self.unlearn_iterative_contrastive(forget_interaction, retain_interaction, self.model)
+                losses.append(loss)
+
+            print("Contrastive learning average loss: ", np.mean(losses))
+
+            self.model.zero_grad()
+            self.optimizer.zero_grad()
+
+            epochs = 1 + retain_samples_used_for_update // len(retain_train_data.dataset)
+
+            # retain round - create NEW different random indices for the training loop
+            for epoch_idx in range(epochs):
+                # Create different random indices for retain data for this training epoch
+                retain_indices_training = np.random.permutation(len(retain_train_data.dataset))
+                
+                training_start_time = time()
+                
+                # Pass the custom indices to _train_epoch
+                train_loss = self._train_epoch_with_custom_indices(
+                    retain_train_data, retain_indices_training, epoch_idx, 
+                    show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update,
+                )
+                
+                self.train_loss_dict[epoch_idx] = (
+                    sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+                )
+                training_end_time = time()
+                train_loss_output = self._generate_train_loss_output(
+                    epoch_idx, training_start_time, training_end_time, train_loss
+                )
+                if verbose:
+                    self.logger.info(train_loss_output)
+                self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
+                self.wandblogger.log_metrics(
+                    {"epoch": epoch_idx, "train_loss": train_loss, "train_step": epoch_idx},
+                    head="train",
+                )
+
 
     def fit(
         self,
@@ -1097,6 +1317,21 @@ class Trainer(AbstractTrainer):
                 retain_samples_used_for_update=retain_samples_used_for_update,
                 neg_grad_retain_sample_size=neg_grad_retain_sample_size,
                 param_list=param_list,
+            )
+        elif unlearning_algorithm == "fanchuan":
+            cur_retain_samples_used_for_update = retain_samples_used_for_update * len(forget_data.dataset)
+            self.fanchuan(
+                epoch_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data,
+                retain_valid_data,
+                retain_test_data,
+                show_progress=show_progress,
+                unlearned_users_before=unlearned_users_before,
+                saved=saved,
+                verbose=verbose,
+                retain_samples_used_for_update=retain_samples_used_for_update,
             )
 
         if saved:

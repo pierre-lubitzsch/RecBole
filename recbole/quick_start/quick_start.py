@@ -296,6 +296,8 @@ def unlearn_recbole(
         config_file_list=config_file_list,
         config_dict=config_dict,
     )
+    retrain_checkpoint_idx_to_match = 0
+    config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
     # different batch_size for unlearning
     config["train_batch_size"] = 256
     init_seed(config["seed"], config["reproducibility"])
@@ -368,6 +370,7 @@ def unlearn_recbole(
     # scale down the lr for non-reset params (which are the majority) during training we will scale the lr for the reset params to the normal value
     if unlearning_algorithm == "kookmin":
         config["learning_rate"] *= 0.1
+        
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
 
     train_data, valid_data, test_data = data_preparation(
@@ -380,7 +383,6 @@ def unlearn_recbole(
     unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
     eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
     eval_masks = []
-    retrain_checkpoint_idx_to_match = 0
 
     unlearning_times = []
     total_start_time = time.time()
@@ -435,6 +437,7 @@ def unlearn_recbole(
             eval_mask = removed_mask.copy()
             eval_masks.append(eval_mask)
             retrain_checkpoint_idx_to_match += 1
+            config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
         
         sys.stdout.flush()
 

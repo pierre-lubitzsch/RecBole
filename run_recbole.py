@@ -97,6 +97,11 @@ if __name__ == "__main__":
         default=0,
         help="gpu to run on",
     )
+    parser.add_argument(
+        "--retrain_flag",
+        action="store_true",
+        help="flag to indicate if retraining is needed after unlearning"
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -119,6 +124,7 @@ if __name__ == "__main__":
         "seed": args.seed,
         "epochs": args.epochs,
         "gpu_id": args.gpu_id,
+        "retrain_flag": args.retrain_flag,
     }
 
     run(
