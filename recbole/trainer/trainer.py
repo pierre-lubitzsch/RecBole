@@ -338,7 +338,7 @@ class Trainer(AbstractTrainer):
             return
         saved_model_file = kwargs.pop("saved_model_file", self.saved_model_file)
 
-        if "unlearn" in saved_model_file:
+        if "unlearning_algorithm" in saved_model_file:
             saved_model_file = f"{saved_model_file[:-len('.pth')]}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{retrain_checkpoint_idx_to_match}.pth"
         state = {
             "config": self.config,
