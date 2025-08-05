@@ -1319,7 +1319,7 @@ class Trainer(AbstractTrainer):
                 param_list=param_list,
             )
         elif unlearning_algorithm == "fanchuan":
-            cur_retain_samples_used_for_update = retain_samples_used_for_update * len(forget_data.dataset)
+            retain_samples_used_for_update = 32 * len(forget_data.dataset)
             self.fanchuan(
                 epoch_idx,
                 forget_data,
