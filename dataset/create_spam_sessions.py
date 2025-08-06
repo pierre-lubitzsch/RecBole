@@ -103,13 +103,13 @@ class SpamSessionGenerator:
             # Sample lambda parameter from log-normal distribution
             lambda_param = np.random.lognormal(mu, np.sqrt(sigma_squared))
 
-            # Sample session length from a poisson distribution with length >= 2
-            session_length = max(2, np.random.poisson(lambda_param))
+            # Sample session length from a poisson distribution with length >= 4 s.t. we have at least 2 train, 1 val, 1 test item
+            session_length = max(4, np.random.poisson(lambda_param))
             
             # Clip to reasonable bounds
             session_length = np.clip(
                 session_length, 
-                2, 
+                4, 
                 self.normal_stats['max_session_length']
             )
             

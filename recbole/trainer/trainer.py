@@ -811,37 +811,28 @@ class Trainer(AbstractTrainer):
             # retain round - use efficient shuffling
             second_round_start_time = time()
             
-            # Method 1: Use DataLoader's built-in shuffling (most efficient)
-            if hasattr(retain_train_data, 'sampler') and hasattr(retain_train_data.sampler, 'set_epoch'):
-                # Use the DataLoader's shuffle mechanism
-                for epoch_idx_inner in range(epochs):
-                    retain_train_data.sampler.set_epoch(j * 1000 + epoch_idx_inner)  # Ensure different shuffle each time
-                    
-                    training_start_time = time()
-                    train_loss = self._train_epoch_efficient_shuffle(
-                        retain_train_data, epoch_idx_inner, 
-                        show_progress=show_progress, 
-                        retain_samples_used_for_update=retain_samples_used_for_update,
-                    )
-                    
-                    self.train_loss_dict[epoch_idx_inner] = (
-                        sum(train_loss) if isinstance(train_loss, tuple) else train_loss
-                    )
-                    training_end_time = time()
-                    train_loss_output = self._generate_train_loss_output(
-                        epoch_idx_inner, training_start_time, training_end_time, train_loss
-                    )
-                    
-                    if verbose:
-                        self.logger.info(train_loss_output)
-                    self._add_train_loss_to_tensorboard(epoch_idx_inner, train_loss)
-                    self.wandblogger.log_metrics(
-                        {"epoch": epoch_idx_inner, "train_loss": train_loss, "train_step": epoch_idx_inner},
-                        head="train",
-                    )
-            else:
-                raise ValueError(
-                    "retain_train_data must have a sampler with set_epoch method for efficient shuffling."
+            for epoch_idx_inner in range(epochs):               
+                training_start_time = time()
+                train_loss = self._train_epoch_efficient_shuffle(
+                    retain_train_data, epoch_idx_inner, 
+                    show_progress=show_progress, 
+                    retain_samples_used_for_update=retain_samples_used_for_update,
+                )
+                
+                self.train_loss_dict[epoch_idx_inner] = (
+                    sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+                )
+                training_end_time = time()
+                train_loss_output = self._generate_train_loss_output(
+                    epoch_idx_inner, training_start_time, training_end_time, train_loss
+                )
+                
+                if verbose:
+                    self.logger.info(train_loss_output)
+                self._add_train_loss_to_tensorboard(epoch_idx_inner, train_loss)
+                self.wandblogger.log_metrics(
+                    {"epoch": epoch_idx_inner, "train_loss": train_loss, "train_step": epoch_idx_inner},
+                    head="train",
                 )
             
             second_round_end_time = time()

@@ -377,16 +377,83 @@ def unlearn_recbole(
         config, dataset, spam=spam,
     )
 
+    if unlearning_algorithm == "scif":
+        retain_samples_per_request = 128  # Based on SCIF default
+    elif unlearning_algorithm == "kookmin":
+        retain_samples_per_request = 32  # Based on Kookmin default
+    elif unlearning_algorithm == "fanchuan":
+        retain_samples_per_request = 32  # Based on Fanchuan default
+        contrastive_samples_per_iteration = 8  # For contrastive learning iterations
+    
+    # Pre-sample retain data for all unlearning requests
+    total_unlearn_requests = len(pairs_by_user)
+    
+    # Create a larger pool of retain indices to draw from
+    retain_dataset_size = len(train_data.dataset)
+    all_retain_indices = np.arange(retain_dataset_size)
+    
+    # Create an oversized pool to account for filtering needs
+    # We'll need extra samples to replace filtered ones
+    pool_size_multiplier = 3  # Make pool 3x larger to ensure we have enough replacements
+    
+    if unlearning_algorithm == "fanchuan":
+        base_samples_needed = (
+            retain_samples_per_request * total_unlearn_requests * 
+            contrastive_samples_per_iteration
+        )
+    else:
+        base_samples_needed = retain_samples_per_request * total_unlearn_requests
+    
+    total_pool_size = base_samples_needed * pool_size_multiplier
+    
+    # Create the oversized pool
+    retain_sample_pool = []
+    while len(retain_sample_pool) < total_pool_size:
+        shuffled_indices = np.random.permutation(all_retain_indices)
+        retain_sample_pool.extend(shuffled_indices.tolist())
+    
+    # Track which pool indices we've used
+    pool_cursor = 0
+    
+    # Helper function to get samples with replacement for filtered users
+    def get_retain_samples_with_replacement(
+        num_samples_needed,
+        unlearned_users_before,
+        pool,
+        cursor,
+        train_dataset
+    ):
+        """Get exactly num_samples_needed retain samples, excluding unlearned users."""
+        selected_indices = []
+        current_cursor = cursor
+        
+        while len(selected_indices) < num_samples_needed:
+            if current_cursor >= len(pool):
+                # Reshuffle and start over if we run out of pool
+                current_cursor = 0
+                np.random.shuffle(pool)
+            
+            idx = pool[current_cursor]
+            sample = train_dataset[idx]
+            current_cursor += 1
+            
+            # Check if this user has been unlearned
+            user_id = sample['user_id'].item() if torch.is_tensor(sample['user_id']) else sample['user_id']
+            
+            if user_id not in unlearned_users_before:
+                selected_indices.append(idx)
+        
+        return selected_indices, current_cursor
+    
+    # Now in the unlearning loop:
     unlearned_users_before = []
-
-    # checkpoint after every quarter of the total user requests
     unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
     eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
     eval_masks = []
-
+    
     unlearning_times = []
     total_start_time = time.time()
-
+    
     for unlearn_request_idx, (u, forget_items) in enumerate(sorted(pairs_by_user.items())):
         print(f"\nUnlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
         request_start_time = time.time()
@@ -411,13 +478,65 @@ def unlearn_recbole(
         forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam)
         clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam)
 
+        if unlearning_algorithm == "scif":
+            # SCIF uses small batches for Hessian computation
+            retain_batch_size = 16  # Or config.get("scif_hessian_batch_size", 16)
+            retain_indices, pool_cursor = get_retain_samples_with_replacement(
+                retain_samples_per_request,
+                unlearned_users_before,
+                retain_sample_pool,
+                pool_cursor,
+                train_data.dataset
+            )
+            
+        elif unlearning_algorithm == "kookmin":
+            # Kookmin might want larger batches or full batch for gradient computation
+            retain_batch_size = config["train_batch_size"]  # Or full batch: len(retain_indices)
+            grad_samples_needed = 128 * len(forget_data.dataset)
+            retain_indices, pool_cursor = get_retain_samples_with_replacement(
+                grad_samples_needed,
+                unlearned_users_before,
+                retain_sample_pool,
+                pool_cursor,
+                train_data.dataset
+            )
+            
+        elif unlearning_algorithm == "fanchuan":
+            # Fanchuan needs to match forget data batch size for contrastive learning
+            retain_batch_size = config["train_batch_size"]  # Same as forget data
+            samples_needed = retain_samples_per_request * contrastive_samples_per_iteration
+            retain_indices, pool_cursor = get_retain_samples_with_replacement(
+                samples_needed,
+                unlearned_users_before,
+                retain_sample_pool,
+                pool_cursor,
+                train_data.dataset
+            )
+        
+        # Create dataset from selected indices
+        current_retain_data = train_data.dataset[retain_indices]
+        current_retain_ds = train_data.dataset.copy(current_retain_data)
+        
+        tmp = config["train_batch_size"]
+        config["train_batch_size"] = retain_batch_size
+        current_retain_loader = data_preparation(config, current_retain_ds, unlearning=True, spam=spam)
+        config["train_batch_size"] = tmp
+
+        # Verify we have the exact number of samples we wanted
+        total_samples = sum(len(batch) for batch in current_retain_loader)
+        expected_samples = retain_samples_per_request if unlearning_algorithm != "fanchuan" else samples_needed
+        if unlearning_algorithm == "kookmin":
+            expected_samples = grad_samples_needed
+            
+        print(f"Retain samples for request {unlearn_request_idx}: {total_samples} (expected: {expected_samples})")
+
         # model training
         saved = unlearn_request_idx in unlearning_checkpoints
         trainer.unlearn(
             unlearn_request_idx,
             forget_data,
             clean_forget_data,
-            retain_train_data=train_data,
+            retain_train_data=current_retain_loader,
             retain_valid_data=valid_data,
             retain_test_data=test_data,
             unlearning_algorithm=unlearning_algorithm,
