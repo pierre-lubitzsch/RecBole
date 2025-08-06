@@ -402,6 +402,8 @@ def unlearn_recbole(
             orig_inter_df.iloc[all_idx]
         )
 
+        print(f"Unlearning {len(cur_forget_ds)} interactions")
+
         clean_forget_ds = dataset.copy(
             orig_inter_df.iloc[all_idx[~mask]]
         )

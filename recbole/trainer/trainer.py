@@ -766,7 +766,7 @@ class Trainer(AbstractTrainer):
             
             # Create different random indices for retain data for the contrastive learning loop
             retain_indices_contrastive = np.random.permutation(len(retain_train_data.dataset))
-            
+            first_round_start_time = time()
             for batch_idx, (forget_interaction, clean_forget_interaction) in enumerate(zip(forget_data, clean_forget_data)):
                 # Get retain interaction using custom indices for contrastive learning
                 batch_size = retain_train_data.batch_size
@@ -792,14 +792,19 @@ class Trainer(AbstractTrainer):
                 loss += self.unlearn_iterative_contrastive(forget_interaction, retain_interaction, self.model)
                 losses.append(loss)
 
+            first_round_end_time = time()
             print("Contrastive learning average loss: ", np.mean(losses))
+            print(f"First round training took {first_round_end_time:.2f - first_round_start_time:.2f} seconds")
 
             self.model.zero_grad()
             self.optimizer.zero_grad()
 
             epochs = 1 + retain_samples_used_for_update // len(retain_train_data.dataset)
 
-            # retain round - create NEW different random indices for the training loop
+            losses = []
+
+            # retain round - create random indices for the training loop
+            second_round_start_time = time()
             for epoch_idx in range(epochs):
                 # Create different random indices for retain data for this training epoch
                 retain_indices_training = np.random.permutation(len(retain_train_data.dataset))
@@ -819,6 +824,7 @@ class Trainer(AbstractTrainer):
                 train_loss_output = self._generate_train_loss_output(
                     epoch_idx, training_start_time, training_end_time, train_loss
                 )
+                losses.append(sum(train_loss_output) if isinstance(train_loss, tuple) else train_loss)
                 if verbose:
                     self.logger.info(train_loss_output)
                 self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
@@ -826,6 +832,10 @@ class Trainer(AbstractTrainer):
                     {"epoch": epoch_idx, "train_loss": train_loss, "train_step": epoch_idx},
                     head="train",
                 )
+
+            second_round_end_time = time()
+            print("Contrastive learning average loss: ", np.mean(losses))
+            print(f"Second round training took {second_round_end_time:.2f - second_round_start_time:.2f} seconds")
 
 
     def fit(
