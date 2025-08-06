@@ -25,6 +25,7 @@ from time import time
 import numpy as np
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from tqdm import tqdm
 import torch.cuda.amp as amp
@@ -33,6 +34,7 @@ from recbole.data.interaction import Interaction
 from recbole.data.dataloader import FullSortEvalDataLoader
 from recbole.evaluator import Evaluator, Collector
 from recbole.model import loss
+from recbole.model.sequential_recommender import GRU4Rec
 from recbole.utils import (
     ensure_dir,
     get_local_time,
@@ -599,38 +601,46 @@ class Trainer(AbstractTrainer):
         model,
     ):
         self.optimizer.zero_grad()
-        item_seq = interaction[self.model.ITEM_SEQ]
-        item_embedding = model.item_embedding(item_seq).reshape(1, -1)
 
-        uniform_label = torch.ones_like(item_embedding, dtype=torch.float32, device=self.device) / item_seq.size(1)
-        loss = self.kl_loss_sym(item_embedding, uniform_label)
+        if isinstance(model, GRU4Rec):
+            raw_scores = model.full_sort_predict(interaction)
+
+            model_probs = F.softmax(raw_scores, dim=1)
+
+            batch_size, n_items = model_probs.shape
+            uniform_probs = torch.ones_like(model_probs) / n_items
+            loss = self.kl_loss_sym(model_probs, uniform_probs)
+        else:
+            raise NotImplementedError(
+                f"Uniform distribution unlearning is not implemented for the model: {type(model)}"
+            )
+
         loss.backward()
-
         self.optimizer.step()
-
         return loss.item()
     
+    def get_embedding_for_contrastive_learning(self, interaction, model):
+        if isinstance(model, GRU4Rec):
+            item_seq = interaction[self.model.ITEM_SEQ]
+            item_seq_len = interaction[self.model.ITEM_SEQ_LEN]
+            item_embeddings = model.item_embedding(item_seq)
+
+            # Get last valid item using sequence lengths
+            batch_idx = torch.arange(item_seq.size(0), device=item_seq.device)
+            last_pos = item_seq_len - 1
+            
+            last_item_embeddings = item_embeddings[batch_idx, last_pos]
+            return last_item_embeddings
+        else:
+            raise NotImplementedError(
+                f"Contrastive learning is not implemented for the model: {type(model)}"
+            )
+
     def unlearn_iterative_contrastive(self, unlearn_interaction, retain_interaction, model):
         self.optimizer.zero_grad()
-        # for now this is correct for GRU4Rec, need to adapt to other models later
-
-        unlearn_item_seq = unlearn_interaction[self.model.ITEM_SEQ]
-        unlearn_seq_len = unlearn_interaction[self.model.ITEM_SEQ_LEN]
-        unlearn_item_embeddings = model.item_embedding(unlearn_item_seq)
-
-        retain_item_seq = retain_interaction[self.model.ITEM_SEQ]
-        retain_seq_len = retain_interaction[self.model.ITEM_SEQ_LEN]
-        retain_item_embeddings = model.item_embedding(retain_item_seq)
-
-        # Get last valid item using sequence lengths
-        batch_idx = torch.arange(unlearn_item_seq.size(0), device=unlearn_item_seq.device)
         
-        unlearn_last_pos = unlearn_seq_len - 1
-        retain_last_pos = retain_seq_len - 1
-        
-        # Extract last valid embeddings
-        unlearn_repr = unlearn_item_embeddings[batch_idx, unlearn_last_pos]  # [batch_size, embed_dim]
-        retain_repr = retain_item_embeddings[batch_idx, retain_last_pos]      # [batch_size, embed_dim]
+        unlearn_repr = self.get_embedding_for_contrastive_learning(unlearn_interaction, model)
+        retain_repr = self.get_embedding_for_contrastive_learning(retain_interaction, model)
 
         t = 1.15
         contrastive_similarity = unlearn_repr @ retain_repr.T / t
