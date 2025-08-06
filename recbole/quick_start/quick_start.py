@@ -457,8 +457,12 @@ def unlearn_recbole(
 
     # eval
     results = []
+    unpoisoned_eval_df = orig_inter_df.loc[~eval_masks[-1]]
+    unpoisoned_eval_dataset = dataset.copy(unpoisoned_eval_df)
+    _, _, unpoisoned_test_data = data_preparation(config, cur_eval_dataset, spam=spam)
     for file, mask in zip(eval_files, eval_masks):
         print(f"Evaluating model {file}\n")
+        # test on data with just current poisoned data removed
         cur_eval_df = orig_inter_df.loc[~mask]
         cur_eval_dataset = dataset.copy(cur_eval_df)
         _, _, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam)
@@ -467,13 +471,32 @@ def unlearn_recbole(
             cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
         )
 
+        
+
         # TODO: add other evaluation metrics like KL when retrained models are available
         result = {
             "test_result": test_result,
         }
-        results.append(result)
 
-        print(result)
+        results.append(unpoisoned_test_result)
+
+        print(f"Results for model {file} only removing currently poisoned data: {result}")
+        print("\n\n")
+
+        # test on data with all poisoned data removed
+        unpoisoned_test_result = trainer.evaluate(
+            unpoisoned_eval_dataset, load_best_model=True, show_progress=config["show_progress"], model_file=file,
+        )
+
+        unpoisoned_result = {
+            "test_result": unpoisoned_test_result,
+        }
+
+        results.append(unpoisoned_result)
+
+        print(f"Results for model {file} on unpoisoned data: {unpoisoned_result}")
+
+        print(unpoisoned_result)
         print("\n\n")
     
     return results
