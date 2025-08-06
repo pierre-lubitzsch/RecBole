@@ -1316,7 +1316,6 @@ class Trainer(AbstractTrainer):
 
         # for epoch_idx in range(self.start_epoch, self.epochs):
         #     # unlearn 1 epoch
-        training_start_time = time()
         if unlearning_algorithm == "scif":
             self.scif(
                 epoch_idx,

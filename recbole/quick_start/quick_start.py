@@ -433,7 +433,7 @@ def unlearn_recbole(
         request_time = request_end_time - request_start_time
         unlearning_times.append(request_time)
 
-        print(f"Request {unlearn_request_idx + 1} completed in {request_time:.2f} seconds")
+        print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
 
         if saved:
             eval_mask = removed_mask.copy()
