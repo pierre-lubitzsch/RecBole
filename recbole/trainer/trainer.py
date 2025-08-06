@@ -794,7 +794,7 @@ class Trainer(AbstractTrainer):
 
             first_round_end_time = time()
             print("Contrastive learning average loss: ", np.mean(losses))
-            print(f"First round training took {first_round_end_time:.2f - first_round_start_time:.2f} seconds")
+            print(f"First round training took {first_round_end_time - first_round_start_time} seconds")
 
             self.model.zero_grad()
             self.optimizer.zero_grad()
@@ -835,7 +835,7 @@ class Trainer(AbstractTrainer):
 
             second_round_end_time = time()
             print("Contrastive learning average loss: ", np.mean(losses))
-            print(f"Second round training took {second_round_end_time:.2f - second_round_start_time:.2f} seconds")
+            print(f"Second round training took {second_round_end_time - second_round_start_time} seconds")
 
 
     def fit(
