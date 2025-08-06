@@ -760,27 +760,34 @@ class Trainer(AbstractTrainer):
         
         print("Uniform pseudolabel learning average loss: ", np.mean(losses))
 
+        # Pre-compute shuffled indices once for all contrastive learning iterations
+        retain_dataset_size = len(retain_train_data.dataset)
+        batch_size = retain_train_data.batch_size
+        
+        # Create a large pool of shuffled indices (enough for all iterations)
+        total_samples_needed = unlearn_iters_contrastive * len(forget_data) * batch_size
+        num_repeats = (total_samples_needed // retain_dataset_size) + 2  # +2 for safety
+        
+        # Create one large shuffled index array
+        base_indices = np.arange(retain_dataset_size)
+        large_shuffled_indices = np.concatenate([
+            np.random.permutation(base_indices) for _ in range(num_repeats)
+        ])
+
         # Second stage: Contrastive learning between forget and retain data
         for j in range(unlearn_iters_contrastive):
             losses = []
             
-            # Create different random indices for retain data for the contrastive learning loop
-            retain_indices_contrastive = np.random.permutation(len(retain_train_data.dataset))
             first_round_start_time = time()
+            
+            # Use a slice of the pre-computed indices for this iteration
+            iter_offset = j * len(forget_data) * batch_size
+            
             for batch_idx, (forget_interaction, clean_forget_interaction) in enumerate(zip(forget_data, clean_forget_data)):
-                # Get retain interaction using custom indices for contrastive learning
-                batch_size = retain_train_data.batch_size
-                start_idx = (batch_idx * batch_size) % len(retain_indices_contrastive)
-                end_idx = min(start_idx + batch_size, len(retain_indices_contrastive))
-                retain_batch_indices = retain_indices_contrastive[start_idx:end_idx]
-                
-                # If we need more samples, wrap around
-                if len(retain_batch_indices) < batch_size:
-                    remaining = batch_size - len(retain_batch_indices)
-                    retain_batch_indices = np.concatenate([
-                        retain_batch_indices, 
-                        retain_indices_contrastive[:remaining]
-                    ])
+                # Get retain interaction using pre-computed indices
+                start_idx = iter_offset + batch_idx * batch_size
+                end_idx = start_idx + batch_size
+                retain_batch_indices = large_shuffled_indices[start_idx:end_idx]
                 
                 retain_train_data_interaction = retain_train_data.dataset[retain_batch_indices]
                 
@@ -793,7 +800,7 @@ class Trainer(AbstractTrainer):
                 losses.append(loss)
 
             first_round_end_time = time()
-            print("Contrastive learning average loss: ", np.mean(losses))
+            print(f"Contrastive learning iteration {j+1} average loss: ", np.mean(losses))
             print(f"First round training took {first_round_end_time - first_round_start_time} seconds")
 
             self.model.zero_grad()
@@ -801,41 +808,211 @@ class Trainer(AbstractTrainer):
 
             epochs = 1 + retain_samples_used_for_update // len(retain_train_data.dataset)
 
-            losses = []
-
-            # retain round - create random indices for the training loop
+            # retain round - use efficient shuffling
             second_round_start_time = time()
-            for epoch_idx in range(epochs):
-                # Create different random indices for retain data for this training epoch
-                retain_indices_training = np.random.permutation(len(retain_train_data.dataset))
-                
-                training_start_time = time()
-                
-                # Pass the custom indices to _train_epoch
-                train_loss = self._train_epoch_with_custom_indices(
-                    retain_train_data, retain_indices_training, epoch_idx, 
-                    show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update,
+            
+            # Method 1: Use DataLoader's built-in shuffling (most efficient)
+            if hasattr(retain_train_data, 'sampler') and hasattr(retain_train_data.sampler, 'set_epoch'):
+                # Use the DataLoader's shuffle mechanism
+                for epoch_idx_inner in range(epochs):
+                    retain_train_data.sampler.set_epoch(j * 1000 + epoch_idx_inner)  # Ensure different shuffle each time
+                    
+                    training_start_time = time()
+                    train_loss = self._train_epoch_efficient_shuffle(
+                        retain_train_data, epoch_idx_inner, 
+                        show_progress=show_progress, 
+                        retain_samples_used_for_update=retain_samples_used_for_update,
+                    )
+                    
+                    self.train_loss_dict[epoch_idx_inner] = (
+                        sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+                    )
+                    training_end_time = time()
+                    train_loss_output = self._generate_train_loss_output(
+                        epoch_idx_inner, training_start_time, training_end_time, train_loss
+                    )
+                    
+                    if verbose:
+                        self.logger.info(train_loss_output)
+                    self._add_train_loss_to_tensorboard(epoch_idx_inner, train_loss)
+                    self.wandblogger.log_metrics(
+                        {"epoch": epoch_idx_inner, "train_loss": train_loss, "train_step": epoch_idx_inner},
+                        head="train",
+                    )
+            else:
+                raise ValueError(
+                    "retain_train_data must have a sampler with set_epoch method for efficient shuffling."
                 )
+            
+            second_round_end_time = time()
+            print(f"Second round training took {second_round_end_time - second_round_start_time} seconds\n")
+    
+    def _train_epoch_efficient_shuffle(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None):
+        """Efficient training epoch that uses DataLoader's built-in shuffling"""
+        self.model.train()
+        loss_func = self.model.calculate_loss
+        total_loss = None
+        
+        iter_data = (
+            tqdm(train_data, total=len(train_data), ncols=100, desc=set_color(f"Train {epoch_idx:>5}", "pink"))
+            if show_progress else train_data
+        )
+
+        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        samples_processed = 0
+        
+        for batch_idx, interaction in enumerate(iter_data):
+            if retain_samples_used_for_update is not None and samples_processed >= retain_samples_used_for_update:
+                break
                 
-                self.train_loss_dict[epoch_idx] = (
-                    sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+            # Limit batch size if we're near the sample limit
+            if retain_samples_used_for_update is not None:
+                remaining_samples = retain_samples_used_for_update - samples_processed
+                if len(interaction) > remaining_samples:
+                    interaction = interaction[:remaining_samples]
+                    
+            interaction = interaction.to(self.device)
+            samples_processed += len(interaction)
+            
+            self.optimizer.zero_grad()
+            sync_loss = 0
+            if not self.config["single_spec"]:
+                self.set_reduce_hook()
+                sync_loss = self.sync_grad_loss()
+
+            with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
+                losses = loss_func(interaction)
+
+            if isinstance(losses, tuple):
+                loss = sum(losses)
+                loss_tuple = tuple(per_loss.item() for per_loss in losses)
+                total_loss = (
+                    loss_tuple if total_loss is None
+                    else tuple(map(sum, zip(total_loss, loss_tuple)))
                 )
-                training_end_time = time()
-                train_loss_output = self._generate_train_loss_output(
-                    epoch_idx, training_start_time, training_end_time, train_loss
-                )
-                losses.append(sum(train_loss_output) if isinstance(train_loss, tuple) else train_loss)
-                if verbose:
-                    self.logger.info(train_loss_output)
-                self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
-                self.wandblogger.log_metrics(
-                    {"epoch": epoch_idx, "train_loss": train_loss, "train_step": epoch_idx},
-                    head="train",
+            else:
+                loss = losses
+                total_loss = losses.item() if total_loss is None else total_loss + losses.item()
+                
+            self._check_nan(loss)
+
+            scaler.scale(loss + sync_loss).backward()
+            if self.clip_grad_norm:
+                clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
+                
+            scaler.step(self.optimizer)
+            scaler.update()
+            
+            if self.gpu_available and show_progress:
+                iter_data.set_postfix_str(
+                    set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
                 )
 
-            second_round_end_time = time()
-            print("Contrastive learning average loss: ", np.mean(losses))
-            print(f"Second round training took {second_round_end_time - second_round_start_time} seconds")
+        return total_loss
+
+    # def fanchuan(
+    #     self,
+    #     epoch_idx,
+    #     forget_data,
+    #     clean_forget_data,
+    #     retain_train_data,
+    #     retain_valid_data=None,
+    #     retain_test_data=None,
+    #     show_progress=False,
+    #     unlearned_users_before=None,
+    #     saved=True,
+    #     verbose=False,
+    #     retain_samples_used_for_update=32,
+    #     unlearn_iters_contrastive=8,
+    # ):
+    #     self.move_optimizer_state(self.optimizer, self.device)
+    #     self.model.train()
+
+    #     # First stage: learn uniform pseudolabel
+    #     losses = []
+    #     for batch_idx, interaction in enumerate(forget_data):
+    #         interaction = interaction.to(self.device)
+    #         loss = self.unlearn_iterative_uniform_distribution(interaction, self.model)
+    #         losses.append(loss)
+        
+    #     print("Uniform pseudolabel learning average loss: ", np.mean(losses))
+
+    #     # Second stage: Contrastive learning between forget and retain data
+    #     for j in range(unlearn_iters_contrastive):
+    #         losses = []
+            
+    #         # Create different random indices for retain data for the contrastive learning loop
+    #         retain_indices_contrastive = np.random.permutation(len(retain_train_data.dataset))
+    #         first_round_start_time = time()
+    #         for batch_idx, (forget_interaction, clean_forget_interaction) in enumerate(zip(forget_data, clean_forget_data)):
+    #             # Get retain interaction using custom indices for contrastive learning
+    #             batch_size = retain_train_data.batch_size
+    #             start_idx = (batch_idx * batch_size) % len(retain_indices_contrastive)
+    #             end_idx = min(start_idx + batch_size, len(retain_indices_contrastive))
+    #             retain_batch_indices = retain_indices_contrastive[start_idx:end_idx]
+                
+    #             # If we need more samples, wrap around
+    #             if len(retain_batch_indices) < batch_size:
+    #                 remaining = batch_size - len(retain_batch_indices)
+    #                 retain_batch_indices = np.concatenate([
+    #                     retain_batch_indices, 
+    #                     retain_indices_contrastive[:remaining]
+    #                 ])
+                
+    #             retain_train_data_interaction = retain_train_data.dataset[retain_batch_indices]
+                
+    #             forget_interaction = forget_interaction.to(self.device)
+    #             clean_forget_interaction = clean_forget_interaction.to(self.device)
+    #             retain_interaction = retain_train_data_interaction.to(self.device)
+
+    #             loss = self.unlearn_iterative_contrastive(forget_interaction, clean_forget_interaction, self.model)
+    #             loss += self.unlearn_iterative_contrastive(forget_interaction, retain_interaction, self.model)
+    #             losses.append(loss)
+
+    #         first_round_end_time = time()
+    #         print("Contrastive learning average loss: ", np.mean(losses))
+    #         print(f"First round training took {first_round_end_time - first_round_start_time} seconds")
+
+    #         self.model.zero_grad()
+    #         self.optimizer.zero_grad()
+
+    #         epochs = 1 + retain_samples_used_for_update // len(retain_train_data.dataset)
+
+    #         losses = []
+
+    #         # retain round - create random indices for the training loop
+    #         second_round_start_time = time()
+    #         for epoch_idx in range(epochs):
+    #             # Create different random indices for retain data for this training epoch
+    #             retain_indices_training = np.random.permutation(len(retain_train_data.dataset))
+                
+    #             training_start_time = time()
+                
+    #             # Pass the custom indices to _train_epoch
+    #             train_loss = self._train_epoch_with_custom_indices(
+    #                 retain_train_data, retain_indices_training, epoch_idx, 
+    #                 show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update,
+    #             )
+                
+    #             self.train_loss_dict[epoch_idx] = (
+    #                 sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+    #             )
+    #             training_end_time = time()
+    #             train_loss_output = self._generate_train_loss_output(
+    #                 epoch_idx, training_start_time, training_end_time, train_loss
+    #             )
+    #             losses.append(sum(train_loss_output) if isinstance(train_loss, tuple) else train_loss)
+    #             if verbose:
+    #                 self.logger.info(train_loss_output)
+    #             self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
+    #             self.wandblogger.log_metrics(
+    #                 {"epoch": epoch_idx, "train_loss": train_loss, "train_step": epoch_idx},
+    #                 head="train",
+    #             )
+
+    #         second_round_end_time = time()
+    #         print("Contrastive learning average loss: ", np.mean(losses))
+    #         print(f"Second round training took {second_round_end_time - second_round_start_time} seconds\n")
 
 
     def fit(

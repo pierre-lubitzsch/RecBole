@@ -388,7 +388,7 @@ def unlearn_recbole(
     total_start_time = time.time()
 
     for unlearn_request_idx, (u, forget_items) in enumerate(sorted(pairs_by_user.items())):
-        print(f"Unlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
+        print(f"\nUnlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
         request_start_time = time.time()
 
         unlearned_users_before.append(u)
