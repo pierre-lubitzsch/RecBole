@@ -602,39 +602,26 @@ class Trainer(AbstractTrainer):
     ):
         self.optimizer.zero_grad()
 
-        if isinstance(model, GRU4Rec):
-            raw_scores = model.full_sort_predict(interaction)
+        raw_scores = model.full_sort_predict(interaction)
 
-            model_probs = F.softmax(raw_scores, dim=1)
+        model_probs = F.softmax(raw_scores, dim=1)
 
-            batch_size, n_items = model_probs.shape
-            uniform_probs = torch.ones_like(model_probs) / n_items
-            loss = self.kl_loss_sym(model_probs, uniform_probs)
-        else:
-            raise NotImplementedError(
-                f"Uniform distribution unlearning is not implemented for the model: {type(model)}"
-            )
+        batch_size, n_items = model_probs.shape
+        uniform_probs = torch.ones_like(model_probs) / n_items
+        loss = self.kl_loss_sym(model_probs, uniform_probs)
 
         loss.backward()
         self.optimizer.step()
         return loss.item()
     
     def get_embedding_for_contrastive_learning(self, interaction, model):
-        if isinstance(model, GRU4Rec):
-            item_seq = interaction[self.model.ITEM_SEQ]
-            item_seq_len = interaction[self.model.ITEM_SEQ_LEN]
-            item_embeddings = model.item_embedding(item_seq)
-
-            # Get last valid item using sequence lengths
-            batch_idx = torch.arange(item_seq.size(0), device=item_seq.device)
-            last_pos = item_seq_len - 1
-            
-            last_item_embeddings = item_embeddings[batch_idx, last_pos]
-            return last_item_embeddings
-        else:
-            raise NotImplementedError(
-                f"Contrastive learning is not implemented for the model: {type(model)}"
-            )
+        # works for SBR models only, need to check functionality if applied to other types of models
+        item_seq = interaction[self.model.ITEM_SEQ]
+        item_seq_len = interaction[self.model.ITEM_SEQ_LEN]
+        
+        # forward returns sequence (session) representation
+        seq_output = model.forward(item_seq, item_seq_len)
+        return seq_output
 
     def unlearn_iterative_contrastive(self, unlearn_interaction, retain_interaction, model):
         self.optimizer.zero_grad()
