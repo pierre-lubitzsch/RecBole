@@ -1,6 +1,5 @@
 use_gpu: True
-gpu_id: 0
-show_progress: True
+show_progress: False
 train_neg_sample_args: ~
 epochs: 30
 
@@ -17,5 +16,7 @@ eval_args:
     order: TO
     split: {RS: [0.8, 0.1, 0.1]}
     mode: full
+
+dataset: rsc15
 
 hidden_size: 100

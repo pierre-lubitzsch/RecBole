@@ -1,6 +1,5 @@
 use_gpu: True
-gpu_id: 0
-show_progress: True
+show_progress: False
 train_neg_sample_args: ~
 epochs: 60
 
@@ -19,6 +18,8 @@ eval_args:
 
 MAX_ITEM_LIST_LENGTH: 50
 POSITION_FIELD: position_id
+
+dataset: rsc15
 
 n_layers: 2
 n_heads: 2

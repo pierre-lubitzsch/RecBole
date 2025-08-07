@@ -616,10 +616,10 @@ class Trainer(AbstractTrainer):
     
     def get_embedding_for_contrastive_learning(self, interaction, model):
         if not hasattr(model, 'ITEM_SEQ') or not hasattr(model, 'ITEM_SEQ_LEN'):
-            raise ValueError("Model does not have ITEM_SEQ or ITEM_SEQ_LEN attributes. This method is designed to work with SBR models.")
+            raise ValueError(f"Model {model} does not have ITEM_SEQ or ITEM_SEQ_LEN attributes. This method is designed to work with SBR models.")
 
-        item_seq = interaction[self.model.ITEM_SEQ]
-        item_seq_len = interaction[self.model.ITEM_SEQ_LEN]
+        item_seq = interaction[model.ITEM_SEQ]
+        item_seq_len = interaction[model.ITEM_SEQ_LEN]
         
         # forward returns sequence (session) representation
         seq_output = model.forward(item_seq, item_seq_len)
