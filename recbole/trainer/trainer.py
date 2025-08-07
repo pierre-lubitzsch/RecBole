@@ -615,7 +615,9 @@ class Trainer(AbstractTrainer):
         return loss.item()
     
     def get_embedding_for_contrastive_learning(self, interaction, model):
-        # works for SBR models only, need to check functionality if applied to other types of models
+        if not hasattr(model, 'ITEM_SEQ') or not hasattr(model, 'ITEM_SEQ_LEN'):
+            raise ValueError("Model does not have ITEM_SEQ or ITEM_SEQ_LEN attributes. This method is designed to work with SBR models.")
+
         item_seq = interaction[self.model.ITEM_SEQ]
         item_seq_len = interaction[self.model.ITEM_SEQ_LEN]
         
