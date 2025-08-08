@@ -34,7 +34,7 @@ from recbole.data.interaction import Interaction
 from recbole.data.dataloader import FullSortEvalDataLoader
 from recbole.evaluator import Evaluator, Collector
 from recbole.model import loss
-from recbole.model.sequential_recommender import GRU4Rec
+from recbole.model.sequential_recommender import GRU4Rec, NARM, SASRec, SRGNN
 from recbole.utils import (
     ensure_dir,
     get_local_time,
@@ -1124,8 +1124,25 @@ class Trainer(AbstractTrainer):
         self,
         model,
     ):
-        # TODO: extend to selection of subset of params
-        return [p for _, p in model.named_parameters()]
+        params = []
+
+        if isinstance(model, GRU4Rec):
+            params.append(model.item_embedding.weight)
+            params.append(model.dense.weight)
+            if model.dense.bias is not None:
+                params.append(model.dense.bias)
+        elif isinstance(model, NARM):
+            params.append(model.item_embedding.weight)
+            params.append(model.b.weight)
+        elif isinstance(model, SASRec):
+            params.append(model.item_embedding.weight)
+        elif isinstance(model, SRGNN):
+            params.append(model.item_embedding.weight)
+            params.append(model.linear_transform.weight)
+            if model.linear_transform.bias is not None:
+                params.append(model.linear_transform.bias)
+
+        return params if len(params) > 0 else [p for _, p in model.named_parameters()]
     
     def norm_list(self, plist) -> float:
         return torch.sqrt(sum(p.pow(2).sum() for p in plist)).item()
