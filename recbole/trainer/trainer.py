@@ -896,110 +896,6 @@ class Trainer(AbstractTrainer):
 
         return total_loss
 
-    # def fanchuan(
-    #     self,
-    #     epoch_idx,
-    #     forget_data,
-    #     clean_forget_data,
-    #     retain_train_data,
-    #     retain_valid_data=None,
-    #     retain_test_data=None,
-    #     show_progress=False,
-    #     unlearned_users_before=None,
-    #     saved=True,
-    #     verbose=False,
-    #     retain_samples_used_for_update=32,
-    #     unlearn_iters_contrastive=8,
-    # ):
-    #     self.move_optimizer_state(self.optimizer, self.device)
-    #     self.model.train()
-
-    #     # First stage: learn uniform pseudolabel
-    #     losses = []
-    #     for batch_idx, interaction in enumerate(forget_data):
-    #         interaction = interaction.to(self.device)
-    #         loss = self.unlearn_iterative_uniform_distribution(interaction, self.model)
-    #         losses.append(loss)
-        
-    #     print("Uniform pseudolabel learning average loss: ", np.mean(losses))
-
-    #     # Second stage: Contrastive learning between forget and retain data
-    #     for j in range(unlearn_iters_contrastive):
-    #         losses = []
-            
-    #         # Create different random indices for retain data for the contrastive learning loop
-    #         retain_indices_contrastive = np.random.permutation(len(retain_train_data.dataset))
-    #         first_round_start_time = time()
-    #         for batch_idx, (forget_interaction, clean_forget_interaction) in enumerate(zip(forget_data, clean_forget_data)):
-    #             # Get retain interaction using custom indices for contrastive learning
-    #             batch_size = retain_train_data.batch_size
-    #             start_idx = (batch_idx * batch_size) % len(retain_indices_contrastive)
-    #             end_idx = min(start_idx + batch_size, len(retain_indices_contrastive))
-    #             retain_batch_indices = retain_indices_contrastive[start_idx:end_idx]
-                
-    #             # If we need more samples, wrap around
-    #             if len(retain_batch_indices) < batch_size:
-    #                 remaining = batch_size - len(retain_batch_indices)
-    #                 retain_batch_indices = np.concatenate([
-    #                     retain_batch_indices, 
-    #                     retain_indices_contrastive[:remaining]
-    #                 ])
-                
-    #             retain_train_data_interaction = retain_train_data.dataset[retain_batch_indices]
-                
-    #             forget_interaction = forget_interaction.to(self.device)
-    #             clean_forget_interaction = clean_forget_interaction.to(self.device)
-    #             retain_interaction = retain_train_data_interaction.to(self.device)
-
-    #             loss = self.unlearn_iterative_contrastive(forget_interaction, clean_forget_interaction, self.model)
-    #             loss += self.unlearn_iterative_contrastive(forget_interaction, retain_interaction, self.model)
-    #             losses.append(loss)
-
-    #         first_round_end_time = time()
-    #         print("Contrastive learning average loss: ", np.mean(losses))
-    #         print(f"First round training took {first_round_end_time - first_round_start_time} seconds")
-
-    #         self.model.zero_grad()
-    #         self.optimizer.zero_grad()
-
-    #         epochs = 1 + retain_samples_used_for_update // len(retain_train_data.dataset)
-
-    #         losses = []
-
-    #         # retain round - create random indices for the training loop
-    #         second_round_start_time = time()
-    #         for epoch_idx in range(epochs):
-    #             # Create different random indices for retain data for this training epoch
-    #             retain_indices_training = np.random.permutation(len(retain_train_data.dataset))
-                
-    #             training_start_time = time()
-                
-    #             # Pass the custom indices to _train_epoch
-    #             train_loss = self._train_epoch_with_custom_indices(
-    #                 retain_train_data, retain_indices_training, epoch_idx, 
-    #                 show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update,
-    #             )
-                
-    #             self.train_loss_dict[epoch_idx] = (
-    #                 sum(train_loss) if isinstance(train_loss, tuple) else train_loss
-    #             )
-    #             training_end_time = time()
-    #             train_loss_output = self._generate_train_loss_output(
-    #                 epoch_idx, training_start_time, training_end_time, train_loss
-    #             )
-    #             losses.append(sum(train_loss_output) if isinstance(train_loss, tuple) else train_loss)
-    #             if verbose:
-    #                 self.logger.info(train_loss_output)
-    #             self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
-    #             self.wandblogger.log_metrics(
-    #                 {"epoch": epoch_idx, "train_loss": train_loss, "train_step": epoch_idx},
-    #                 head="train",
-    #             )
-
-    #         second_round_end_time = time()
-    #         print("Contrastive learning average loss: ", np.mean(losses))
-    #         print(f"Second round training took {second_round_end_time - second_round_start_time} seconds\n")
-
 
     def fit(
         self,
@@ -1298,10 +1194,31 @@ class Trainer(AbstractTrainer):
     def _add_scaled(self, x, y, alpha):
         return [xi + alpha * yi for xi, yi in zip(x, y)]
 
+    def has_recurrent_layers(self, model):
+        recurrent_modules = (
+            torch.nn.RNN,
+            torch.nn.LSTM,
+            torch.nn.GRU,
+            torch.nn.RNNCell,
+            torch.nn.LSTMCell,
+            torch.nn.GRUCell,
+        )
+        
+        for module in model.modules():
+            if isinstance(module, recurrent_modules):
+                return True
+        return False
+
     def _hvp_single(self, model, interaction, v_list, param_list):
         loss_func = model.calculate_loss
         # second derivative not supported for RNNs when using cuDNN...
-        with torch.backends.cudnn.flags(enabled=False):
+        if self.has_recurrent_layers(model):
+            with torch.backends.cudnn.flags(enabled=False):
+                loss = loss_func(interaction)
+                grad = torch.autograd.grad(loss, param_list, create_graph=True)
+                dot  = sum((g * v).sum() for g, v in zip(grad, v_list))
+                hv   = torch.autograd.grad(dot, param_list, retain_graph=False)
+        else:
             loss = loss_func(interaction)
             grad = torch.autograd.grad(loss, param_list, create_graph=True)
             dot  = sum((g * v).sum() for g, v in zip(grad, v_list))

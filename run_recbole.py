@@ -88,7 +88,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--epochs",
         type=int,
-        default=100,
+        default=None,
         help="number of training epochs"
     )
     parser.add_argument(
@@ -122,10 +122,11 @@ if __name__ == "__main__":
         "n_target_items": args.n_target_items,
         "unlearn_sample_selection_seed": args.seed,
         "seed": args.seed,
-        "epochs": args.epochs,
         "gpu_id": args.gpu_id,
         "retrain_flag": args.retrain_flag,
     }
+    if args.epochs is not None:
+        config_dict["epochs"] = args.epochs
 
     run(
         args.model,
