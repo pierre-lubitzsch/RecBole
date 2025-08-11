@@ -131,7 +131,7 @@ class Trainer(AbstractTrainer):
         self.gpu_available = torch.cuda.is_available() and config["use_gpu"]
         self.device = config["device"]
         if isinstance(config["gpu_id"], int) and config["gpu_id"] != -1:
-            self.device = f"cuda:{config['gpu_id']}"
+            self.device = "cuda"#f"cuda:{config['gpu_id']}"
         self.checkpoint_dir = config["checkpoint_dir"]
         self.enable_amp = config["enable_amp"]
         self.enable_scaler = torch.cuda.is_available() and config["enable_scaler"]
