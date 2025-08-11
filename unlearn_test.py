@@ -121,9 +121,10 @@ def main():
         "seed": args.seed,
         "spam": args.spam,
         "unlearning_algorithm": args.unlearning_algorithm,
-        "epochs": args.epochs,
         "gpu_id": args.gpu_id,
     }
+    if args.epochs is not None:
+        config_dict["epochs"] = args.epochs
 
     if args.spam:
         base_model_path = f"./saved/model_{args.model}_seed_{args.seed}_dataset_{args.dataset}_unlearning_fraction_{args.unlearning_fraction}_n_target_items_{args.n_target_items}_best.pth"
