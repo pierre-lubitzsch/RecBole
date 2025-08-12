@@ -1,0 +1,52 @@
+[project]
+name = "RecBole"
+version = "0.1.0"
+description = "Machine Unlearning using RecBole library models"
+requires-python = ">=3.8,<3.12"
+dependencies = [
+    "torch>=2.4.0",
+    "numpy>=1.17.2",
+    "scipy>=1.6.0",
+    "hyperopt==0.2.5",
+    "pandas>=1.3.0",
+    "tqdm>=4.48.2",
+    "scikit-learn>=0.23.2",
+    "pyyaml>=5.1.0",
+    "colorlog>=4.7.2",
+    "colorama>=0.4.4",
+    "tensorboard>=2.5.0",
+    "thop>=0.1.1.post2207130030",
+    "ray>=1.13.0,<=2.6.3",
+    "tabulate>=0.8.10",
+    "plotly>=4.0.0",
+    "texttable>=0.9.0",
+    "psutil>=5.9.0",
+    "torch-geometric",
+]
+
+[project.optional-dependencies]
+ml = [
+    "lightgbm==4.6.0",
+    "xgboost==2.1.4",
+]
+
+[tool.uv]
+find-links = ["https://data.pyg.org/whl/torch-2.4.0+cu121.html"]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchaudio = { index = "pytorch" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
