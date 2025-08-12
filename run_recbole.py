@@ -102,6 +102,18 @@ if __name__ == "__main__":
         action="store_true",
         help="flag to indicate if retraining is needed after unlearning"
     )
+    parser.add_argument(
+        "--rmia_out_model_flag",
+        action="store_true",
+        help="if set we train OUT models for RMIA",
+    )
+    parser.add_argument(
+        "--rmia_out_model_partition_idx",
+        type=int,
+        default=None,
+        choices=[0, 1, 2, 3, 4],
+        help="if --rmia_out_model_flag is set, we train OUT models for RMIA with this partition index",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -124,6 +136,8 @@ if __name__ == "__main__":
         "seed": args.seed,
         "gpu_id": args.gpu_id,
         "retrain_flag": args.retrain_flag,
+        "rmia_out_model_flag": args.rmia_out_model_flag,
+        "rmia_out_model_partition_idx": args.rmia_out_model_partition_idx,
     }
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs

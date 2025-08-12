@@ -109,6 +109,38 @@ def run(
     return res
 
 
+def k_subsets_exact_np(user_list, k=10, return_indices=False):
+    """
+    Create k reference models for RMIA evaluation
+    
+    Each sample should appear in approximately k/2 models
+    """
+    user_list = np.asarray(user_list)
+
+    # Save RNG state
+    old_state = np.random.get_state()
+
+    # Fixed seed for reproducibility
+    np.random.seed(2)
+    reference_user_subsets = []
+    
+    # Get all user/session IDs
+    n_users = user_list.shape[0]
+    
+    for i in range(k):
+        # For each reference model, randomly select 50% of users (a.k.a. sessions)
+        # Different random subset for each model
+        selected_mask = np.random.binomial(1, 0.5, n_users).astype(bool)
+        selected_users = user_list[selected_mask]
+        
+        reference_user_subsets.append(selected_users)
+    
+    np.random.set_state(old_state)
+
+    return reference_user_subsets
+    
+
+
 def run_recbole(
     model=None,
     dataset=None,
@@ -202,6 +234,21 @@ def run_recbole(
         dataset = dataset.copy(dataset.inter_feat[~removed_mask])
 
         print("retain dataset")
+        logger.info(dataset)
+    
+    elif config["rmia_out_model_flag"]:
+        uid_field = dataset.uid_field
+        user_ids = dataset.inter_feat[uid_field].to_numpy()
+        unique_users = np.unique(user_ids)
+        
+        user_subsets = k_subsets_exact_np(unique_users, 10)
+
+        users_to_drop = user_subsets[config["rmia_out_model_partition_idx"]].tolist()
+        rmia_removed_mask = ~np.isin(user_ids, list(users_to_drop))
+
+        dataset = dataset.copy(dataset.inter_feat[rmia_removed_mask])
+
+        print(f"rmia dataset for OUT model with idx: {config['rmia_out_model_partition_idx']}")
         logger.info(dataset)
 
     # dataset splitting
