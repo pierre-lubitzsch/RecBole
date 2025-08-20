@@ -109,35 +109,41 @@ def run(
     return res
 
 
-def k_subsets_exact_np(user_list, k=10, return_indices=False):
+def k_subsets_exact_np(user_list, k=8):
     """
-    Create k reference models for RMIA evaluation
+    Efficiently create k subsets where each sample appears in exactly k/2 subsets.
+    Optimized for when k << n.
     
-    Each sample should appear in approximately k/2 models
+    Args:
+        samples: list or array of samples
+        k: number of subsets (must be even)
+    
+    Returns:
+        list of k subsets
     """
+
     user_list = np.asarray(user_list)
 
-    # Save RNG state
     old_state = np.random.get_state()
-
-    # Fixed seed for reproducibility
     np.random.seed(2)
-    reference_user_subsets = []
+
+    assert k % 2 == 0, f"k (number of total reference models) must be even. currently k = {k}"
     
-    # Get all user/session IDs
-    n_users = user_list.shape[0]
-    
-    for i in range(k):
-        # For each reference model, randomly select 50% of users (a.k.a. sessions)
-        # Different random subset for each model
-        selected_mask = np.random.binomial(1, 0.5, n_users).astype(bool)
-        selected_users = user_list[selected_mask]
+    n = len(user_list)
+    half_k = k // 2
         
-        reference_user_subsets.append(selected_users)
+    inclusion_matrix = np.zeros((n, k), dtype=bool)
+    random_selections = np.random.rand(n, k).argsort(axis=1)[:, :half_k]
+    
+    rows = np.arange(n)[:, None]
+    inclusion_matrix[rows, random_selections] = True
+    
+    subsets = [user_list[inclusion_matrix[:, j]].tolist() for j in range(k)]
     
     np.random.set_state(old_state)
 
-    return reference_user_subsets
+    return subsets
+    
     
 
 
@@ -239,9 +245,9 @@ def run_recbole(
     elif config["rmia_out_model_flag"]:
         uid_field = dataset.uid_field
         user_ids = dataset.inter_feat[uid_field].to_numpy()
-        unique_users = np.unique(user_ids)
+        unique_users = np.sort(np.unique(user_ids))
         
-        user_subsets = k_subsets_exact_np(unique_users, 10)
+        user_subsets = k_subsets_exact_np(unique_users, k=config["rmia_out_model_k"])
 
         users_to_drop = user_subsets[config["rmia_out_model_partition_idx"]].tolist()
         rmia_removed_mask = ~np.isin(user_ids, list(users_to_drop))
@@ -651,47 +657,79 @@ def unlearn_recbole(
 
     # eval
     results = []
-    unpoisoned_eval_df = orig_inter_df.loc[~eval_masks[-1]]
-    unpoisoned_eval_dataset = dataset.copy(unpoisoned_eval_df)
-    _, _, unpoisoned_test_data = data_preparation(config, unpoisoned_eval_dataset, spam=spam)
-    
-    for file, mask in zip(eval_files, eval_masks):
-        print(f"Evaluating model {file}\n")
+    # First loop: evaluate each model on its corresponding masked data
+    for i, (file, mask) in enumerate(zip(eval_files, eval_masks)):
+        print(f"Evaluating model {file} on data with current mask\n")
+        
+        # Clear GPU cache before each evaluation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         # test on data with just current poisoned data removed
         cur_eval_df = orig_inter_df.loc[~mask]
         cur_eval_dataset = dataset.copy(cur_eval_df)
-        _, _, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam)
+        cur_train_data, cur_val_data, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam)
+
+        del cur_train_data, cur_val_data  # we only need test data for evaluation
+        gc.collect()
 
         test_result = trainer.evaluate(
             cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
         )
 
-        # TODO: add other evaluation metrics like KL when retrained models are available
         result = {
             "test_result": test_result,
+            "model_file": file,
+            "mask_type": "current"
         }
-
         results.append(result)
+        print(f"Results for model {file} only removing currently poisoned data: {test_result}")
+        
+        # clear the current test data
+        del cur_eval_df, cur_eval_dataset, cur_test_data
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        print("\n")
+        sys.stdout.flush()
 
-        print(f"Results for model {file} only removing currently poisoned data: {result}")
-        print("\n\n")
+    # Now create unpoisoned data once for all models
+    print("Creating unpoisoned dataset for all models...")
+    unpoisoned_eval_df = orig_inter_df.loc[~eval_masks[-1]]
+    unpoisoned_eval_dataset = dataset.copy(unpoisoned_eval_df)
+    unpoisoned_train_data, unpoisoned_val_data, unpoisoned_test_data = data_preparation(config, unpoisoned_eval_dataset, spam=spam)
 
-        # test on data with all poisoned data removed
+    del unpoisoned_train_data, unpoisoned_val_data  # we only need test data for evaluation
+    gc.collect()
+
+    # Second loop: evaluate all models on the same unpoisoned data
+    for file in eval_files:
+        print(f"Evaluating model {file} on unpoisoned data\n")
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         unpoisoned_test_result = trainer.evaluate(
             unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
         )
 
         unpoisoned_result = {
             "test_result": unpoisoned_test_result,
+            "model_file": file,
+            "mask_type": "unpoisoned"
         }
-
         results.append(unpoisoned_result)
+        print(f"Results for model {file} on unpoisoned data: {unpoisoned_test_result}")
+        print("\n")
+        sys.stdout.flush()
 
-        print(f"Results for model {file} on unpoisoned data: {unpoisoned_result}")
+    # Clean up unpoisoned data after all evaluations
+    del unpoisoned_eval_df, unpoisoned_eval_dataset, unpoisoned_test_data
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-        print(unpoisoned_result)
-        print("\n\n")
-    
     return results
 
 def run_recboles(rank, *args):

@@ -10,7 +10,8 @@ class RMIAUnlearningEvaluator:
                  gamma: float = 2.0,
                  scaling_factor_a: float = 1,  # From RMIA paper for ImageNet
                  online: bool = False,
-                 dataset=None):
+                 dataset=None,
+                 k=8,):
         """
         RMIA implementation following Algorithm 1 from the paper
         
@@ -25,36 +26,34 @@ class RMIAUnlearningEvaluator:
 
         uid_field = dataset.uid_field
         user_ids = dataset.inter_feat[uid_field].to_numpy()
-        unique_users = np.unique(user_ids)
+        unique_users = np.sort(np.unique(user_ids))
         
-        self.user_subsets = k_subsets_exact_np(unique_users, 10)
+        self.user_subsets = k_subsets_exact_np(unique_users, k=k)
     
-    def compute_pr_x_given_theta(self, model, interactions):
+    def compute_pr_x_given_theta(self, model, interaction):
         """
         Compute Pr(x|theta) for a session in session-based recommendation
         This is the probability of the session under the model
         """
         model.eval()
+        
+        # For session-based rec: compute product of prediction probabilities
+        log_prob = 0
         with torch.no_grad():
-            # For session-based rec: compute product of prediction probabilities
-            log_prob = 0
-            for interaction in interactions:                
-                scores = model.full_sort_predict(interaction)  # Shape: [batch_size, n_items]
-                probas = F.softmax(scores, dim=-1)
-                
-                # Get the target item from the interaction
-                if model.ITEM_ID in interaction:
-                    target_items = interaction[model.ITEM_ID]
-                else:
-                    # You need to have the target item somewhere in your interaction
-                    raise KeyError("No target item found in interaction")
-                
-                # Get probabilities for the target items
-                batch_indices = torch.arange(scores.shape[0])
-                target_probs = probas[batch_indices, target_items]
-                
-                # Sum log probabilities
-                log_prob += torch.log(target_probs + 1e-10).sum()
+            scores = model.full_sort_predict(interaction)  # Shape: [batch_size, n_items]
+            
+        probas = F.softmax(scores, dim=-1)
+        
+        if model.ITEM_ID in interaction:
+            target_items = interaction[model.ITEM_ID]
+        else:
+            # You need to have the target item somewhere in your interaction
+            raise KeyError("No target item found in interaction")
+        
+        batch_indices = torch.arange(scores.shape[0])
+        target_probs = probas[batch_indices, target_items]
+        
+        log_prob += torch.log(target_probs + 1e-10).sum()
             
         return torch.exp(log_prob).item()
     
@@ -149,7 +148,7 @@ class RMIAUnlearningEvaluator:
             retained_sessions: Sessions that should be remembered
             population_sessions: General population for comparison
             reference_models: List of reference models (if None, uses retrained_model)
-            beta_threshold: Decision threshold β for membership inference
+            beta_threshold: Decision threshold beta for membership inference
         
         Returns:
             Results dictionary with membership detection rates
@@ -174,6 +173,7 @@ class RMIAUnlearningEvaluator:
             }
         }
         
+        # TODO: do this in the right format with interaction datasets having batch size 1
         # Test unlearned sessions (should NOT be detected as members)
         for session in unlearned_sessions:
             # Test on unlearned model
@@ -238,27 +238,27 @@ class RMIAUnlearningEvaluator:
         
         return results, summary
 
-# Usage example following Algorithm 1 exactly:
-evaluator = RMIAUnlearningEvaluator(
-    gamma=2.0,           # γ parameter from paper
-    scaling_factor_a=0.3, # Adjust based on your dataset (0.3 for CIFAR-10)
-    online=False         # Use offline mode (more practical)
-)
+# # Usage example following Algorithm 1 exactly:
+# evaluator = RMIAUnlearningEvaluator(
+#     gamma=2.0,           # γ parameter from paper
+#     scaling_factor_a=0.3, # Adjust based on your dataset (0.3 for CIFAR-10)
+#     online=False         # Use offline mode (more practical)
+# )
 
-# If you have multiple reference models trained on different subsets:
-# reference_models = [model1, model2, model3, ...]
-# Otherwise, just use the retrained model:
-reference_models = [retrained_model]
+# # If you have multiple reference models trained on different subsets:
+# # reference_models = [model1, model2, model3, ...]
+# # Otherwise, just use the retrained model:
+# reference_models = [retrained_model]
 
-results, summary = evaluator.evaluate_unlearning(
-    unlearned_model=your_unlearned_model,
-    retrained_model=your_retrained_model,
-    unlearned_sessions=unlearned_sessions,
-    retained_sessions=retained_sessions,
-    population_sessions=all_available_sessions,
-    reference_models=reference_models,
-    beta_threshold=0.5
-)
+# results, summary = evaluator.evaluate_unlearning(
+#     unlearned_model=your_unlearned_model,
+#     retrained_model=your_retrained_model,
+#     unlearned_sessions=unlearned_sessions,
+#     retained_sessions=retained_sessions,
+#     population_sessions=all_available_sessions,
+#     reference_models=reference_models,
+#     beta_threshold=0.5
+# )
 
 # Interpretation:
 # Good unlearning: unlearned_model_leak_rate ≈ retrained_baseline_leak_rate (both low)
