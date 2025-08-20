@@ -81,25 +81,30 @@ def main():
     parser.add_argument(
         "--spam",
         action="store_true",
-        help="flag if we are in the spam setting"
+        help="flag if we are in the spam setting",
     )
     parser.add_argument(
         "--n_target_items",
         type=int,
         default=10,
-        help="number of target items the attacker wants to boost in the spam setting"
+        help="number of target items the attacker wants to boost in the spam setting",
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=100,
-        help="number of training epochs"
+        help="number of training epochs",
     )
     parser.add_argument(
         "--gpu_id",
         type=int,
         default=0,
         help="gpu to run on",
+    )
+    parser.add_argument(
+        "--eval_only",
+        action="store_true",
+        help="if set, only evaluate instead of unlearning and then evaluating",
     )
 
     args, _ = parser.parse_known_args()
@@ -122,6 +127,7 @@ def main():
         "spam": args.spam,
         "unlearning_algorithm": args.unlearning_algorithm,
         "gpu_id": args.gpu_id,
+        "eval_only": args.eval_only,
     }
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
