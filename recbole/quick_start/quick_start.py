@@ -529,6 +529,15 @@ def unlearn_recbole(
         mask = np.isin(item_ids[all_idx], forget_items)
         removed_mask[all_idx[mask]] = True
 
+        saved_checkpoint = unlearn_request_idx in unlearning_checkpoints
+
+        if saved_checkpoint:
+            eval_mask = removed_mask.copy()
+            eval_masks.append(eval_mask)
+
+        if "eval_only" in config and config["eval_only"]:
+            continue
+        
         cur_forget_ds = dataset.copy(
             orig_inter_df.iloc[all_idx]
         )
@@ -589,7 +598,7 @@ def unlearn_recbole(
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
             sessions_needed = int(total_samples_needed / avg_session_length) + 1
-        
+    
         # Get complete sessions
         retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
             sessions_needed,
@@ -612,49 +621,47 @@ def unlearn_recbole(
         config["train_batch_size"] = tmp
 
         # model training
-        if "eval_only" not in config or not config["eval_only"]:
-            saved_checkpoint = unlearn_request_idx in unlearning_checkpoints
-            trainer.unlearn(
-                unlearn_request_idx,
-                forget_data,
-                clean_forget_data,
-                retain_train_data=current_retain_loader,
-                retain_valid_data=None,#valid_data,
-                retain_test_data=None,#test_data,
-                unlearning_algorithm=unlearning_algorithm,
-                saved=saved_checkpoint,
-                show_progress=False,  # no progress bar during unlearning as it is short either way
-                max_norm=max_norm,
-                unlearned_users_before=unlearned_users_before,
-                kookmin_init_rate=kookmin_init_rate,
-                retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
-            )
+        trainer.unlearn(
+            unlearn_request_idx,
+            forget_data,
+            clean_forget_data,
+            retain_train_data=current_retain_loader,
+            retain_valid_data=None,#valid_data,
+            retain_test_data=None,#test_data,
+            unlearning_algorithm=unlearning_algorithm,
+            saved=saved_checkpoint,
+            show_progress=False,  # no progress bar during unlearning as it is short either way
+            max_norm=max_norm,
+            unlearned_users_before=unlearned_users_before,
+            kookmin_init_rate=kookmin_init_rate,
+            retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
+        )
 
-            request_end_time = time.time()
-            request_time = request_end_time - request_start_time
-            unlearning_times.append(request_time)
+        request_end_time = time.time()
+        request_time = request_end_time - request_start_time
+        unlearning_times.append(request_time)
 
-            print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
+        print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
 
-            if saved_checkpoint:
-                eval_mask = removed_mask.copy()
-                eval_masks.append(eval_mask)
-                retrain_checkpoint_idx_to_match += 1
-                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
-        
+        if saved_checkpoint:
+            retrain_checkpoint_idx_to_match += 1
+            config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
+
         sys.stdout.flush()
 
-    gc.collect()
+        gc.collect()
 
-    total_end_time = time.time()
-    total_unlearning_time = total_end_time - total_start_time
 
-    print(f"\nUnlearning Time Summary")
-    print(f"Total unlearning time: {total_unlearning_time:.2f} seconds ({total_unlearning_time/60:.2f} minutes)")
-    print(f"Average time per request: {np.mean(unlearning_times):.2f} seconds")
-    print(f"Min time per request: {np.min(unlearning_times):.2f} seconds")
-    print(f"Max time per request: {np.max(unlearning_times):.2f} seconds")
-    print(f"Total requests processed: {len(unlearning_times)}")
+    if "eval_only" not in config or not config["eval_only"]:
+        total_end_time = time.time()
+        total_unlearning_time = total_end_time - total_start_time
+
+        print(f"\nUnlearning Time Summary")
+        print(f"Total unlearning time: {total_unlearning_time:.2f} seconds ({total_unlearning_time/60:.2f} minutes)")
+        print(f"Average time per request: {np.mean(unlearning_times):.2f} seconds")
+        print(f"Min time per request: {np.min(unlearning_times):.2f} seconds")
+        print(f"Max time per request: {np.max(unlearning_times):.2f} seconds")
+        print(f"Total requests processed: {len(unlearning_times)}")
 
     # eval
     # set eval batch size manually for now, as there is no parameter yet. change this in the future
