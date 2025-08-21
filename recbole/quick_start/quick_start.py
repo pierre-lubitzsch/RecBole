@@ -17,6 +17,7 @@ import torch.distributed as dist
 from collections.abc import MutableMapping
 from logging import getLogger
 import collections
+import json
 
 from ray import tune
 
@@ -373,7 +374,13 @@ def unlearn_recbole(
             config["data_path"],
             f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
         )
-
+        unlearning_samples_metadata_path = os.path.join(
+            config["data_path"],
+            f"spam_metadata_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.json"
+        )
+        with open(unlearning_samples_metadata_path, "r") as f:
+            metadata = json.load(f)
+            target_items = np.array(list(map(int, metadata["target_items"])), dtype=np.int64)
     else:
         unlearning_samples_path = os.path.join(
             config["data_path"],
@@ -537,7 +544,7 @@ def unlearn_recbole(
 
         if "eval_only" in config and config["eval_only"]:
             continue
-        
+
         cur_forget_ds = dataset.copy(
             orig_inter_df.iloc[all_idx]
         )
@@ -667,10 +674,22 @@ def unlearn_recbole(
     # set eval batch size manually for now, as there is no parameter yet. change this in the future
     config["eval_batch_size"] = 256
     results = []
+
+    target_item_proba_sums = []
+    target_item_proba_maxs = []
+    target_item_proba_mins = []
+    interaction_counts = []
+
+    # TODO: also look at retrained and original models for proba eval at least, or maybe do it separately before and load it
+
     # First loop: evaluate each model on its corresponding masked data
     for i, (file, mask) in enumerate(zip(eval_files, eval_masks)):
         print(f"Evaluating model {file} on data with current mask\n")
-        
+        target_item_proba_sums.append(np.zeros(len(target_items), dtype=np.float32))
+        target_item_proba_maxs.append(np.array([float("-inf")] * len(target_items)))
+        target_item_proba_mins.append(np.array([float("inf")] * len(target_items)))
+        interaction_counts.append(0)
+
         # Clear GPU cache before each evaluation
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -687,10 +706,28 @@ def unlearn_recbole(
             cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
         )
 
+        for batch_idx, interaction in enumerate(cur_test_data):
+            interaction = interaction.to(model.device)
+            raw_scores = model.full_sort_predict(interaction)
+            target_idx = torch.as_tensor(target_items, device=raw_scores.device, dtype=torch.long)
+
+            # get softmax normalization constant
+            logZ = torch.logsumexp(raw_scores, dim=1, keepdim=True)
+
+            # get probas of target items
+            p_targets = torch.exp(raw_scores.index_select(1, target_idx) - logZ)
+            target_item_proba_sums[-1] += torch.sum(p_targets, dim=0).cpu().numpy()
+            target_item_proba_maxs[-1] = np.maximum(target_item_proba_maxs[-1], torch.max(p_targets, dim=0).cpu().numpy())
+            target_item_proba_mins[-1] = np.minimum(target_item_proba_mins[-1], torch.min(p_targets, dim=0).cpu().numpy())
+            interaction_counts[-1] += len(interaction)
+
         result = {
             "test_result": test_result,
             "model_file": file,
-            "mask_type": "current"
+            "mask_type": "current",
+            "target_item_proba_min": target_item_proba_mins[-1].tolist(),
+            "target_item_proba_max": target_item_proba_maxs[-1].tolist(),
+            "target_item_proba_avg": (target_item_proba_sums[-1] / interaction_counts[-1]).tolist(),
         }
         results.append(result)
         print(f"Results for model {file} only removing currently poisoned data: {test_result}")
@@ -703,6 +740,18 @@ def unlearn_recbole(
         
         print("\n")
         sys.stdout.flush()
+    
+    proba_results = {
+        "target_item_proba_sums": target_item_proba_sums,
+        "target_item_proba_maxs": target_item_proba_maxs,
+        "target_item_proba_mins": target_item_proba_mins,
+        "interaction_counts": interaction_counts,
+    }
+
+    unpoisoned_target_item_proba_sums = []
+    unpoisoned_target_item_proba_maxs = []
+    unpoisoned_target_item_proba_mins = []
+    unpoisoned_interaction_counts = []
 
     # Now create unpoisoned data once for all models
     print("Creating unpoisoned dataset for all models...")
@@ -716,7 +765,11 @@ def unlearn_recbole(
     # Second loop: evaluate all models on the same unpoisoned data
     for file in eval_files:
         print(f"Evaluating model {file} on unpoisoned data\n")
-        
+        unpoisoned_target_item_proba_sums.append(np.zeros(len(target_items), dtype=np.float32))
+        unpoisoned_target_item_proba_maxs.append(np.array([float("-inf")] * len(target_items)))
+        unpoisoned_target_item_proba_mins.append(np.array([float("inf")] * len(target_items)))
+        unpoisoned_interaction_counts.append(0)
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
@@ -724,12 +777,31 @@ def unlearn_recbole(
             unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
         )
 
+        for batch_idx, interaction in enumerate(unpoisoned_test_data):
+            interaction = interaction.to(model.device)
+            raw_scores = model.full_sort_predict(interaction)
+            target_idx = torch.as_tensor(target_items, device=raw_scores.device, dtype=torch.long)
+
+            # get softmax normalization constant
+            logZ = torch.logsumexp(raw_scores, dim=1, keepdim=True)
+
+            # get probas of target items
+            p_targets = torch.exp(raw_scores.index_select(1, target_idx) - logZ)
+            target_item_proba_sums[-1] += torch.sum(p_targets, dim=0).cpu().numpy()
+            target_item_proba_maxs[-1] = np.maximum(target_item_proba_maxs[-1], torch.max(p_targets, dim=0).cpu().numpy())
+            target_item_proba_mins[-1] = np.minimum(target_item_proba_mins[-1], torch.min(p_targets, dim=0).cpu().numpy())
+            interaction_counts[-1] += len(interaction)
+
         unpoisoned_result = {
             "test_result": unpoisoned_test_result,
             "model_file": file,
-            "mask_type": "unpoisoned"
+            "mask_type": "current",
+            "target_item_proba_min": unpoisoned_target_item_proba_mins[-1].tolist(),
+            "target_item_proba_max": unpoisoned_target_item_proba_maxs[-1].tolist(),
+            "target_item_proba_avg": (unpoisoned_target_item_proba_sums[-1] / unpoisoned_interaction_counts[-1]).tolist(),
         }
         results.append(unpoisoned_result)
+
         print(f"Results for model {file} on unpoisoned data: {unpoisoned_test_result}")
         print("\n")
         sys.stdout.flush()
