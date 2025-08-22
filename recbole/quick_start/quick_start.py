@@ -698,10 +698,6 @@ def unlearn_recbole(
         del cur_train_data, cur_val_data  # we only need test data for evaluation
         gc.collect()
 
-        test_result = trainer.evaluate(
-            cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
-        )
-
         for batch_idx, interaction in enumerate(cur_test_data):
             interaction = interaction.to(model.device)
             raw_scores = model.full_sort_predict(interaction)
@@ -719,6 +715,10 @@ def unlearn_recbole(
                 probabilities = p_targets[j].cpu().numpy()
                 
                 model_interaction_probabilities[file].append((item_seq, item_id, probabilities))
+
+        test_result = trainer.evaluate(
+            cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
+        )
 
         result = {
             "test_result": test_result,
@@ -754,10 +754,6 @@ def unlearn_recbole(
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
-        unpoisoned_test_result = trainer.evaluate(
-            unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
-        )
 
         for batch_idx, interaction in enumerate(unpoisoned_test_data):
             interaction = interaction.to(model.device)
@@ -776,6 +772,10 @@ def unlearn_recbole(
                 probabilities = p_targets[j].cpu().numpy()
                 
                 model_interaction_probabilities[unpoisoned_key].append((item_seq, item_id, probabilities))
+
+        unpoisoned_test_result = trainer.evaluate(
+            unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
+        )
 
         unpoisoned_result = {
             "test_result": unpoisoned_test_result,
