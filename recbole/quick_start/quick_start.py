@@ -18,6 +18,8 @@ from collections.abc import MutableMapping
 from logging import getLogger
 import collections
 import json
+import pickle
+from pathlib import Path
 
 from ray import tune
 
@@ -675,21 +677,15 @@ def unlearn_recbole(
     config["eval_batch_size"] = 256
     results = []
 
-    target_item_proba_sums = []
-    target_item_proba_maxs = []
-    target_item_proba_mins = []
-    interaction_counts = []
-
-    # TODO: also look at retrained and original models for proba eval at least, or maybe do it separately before and load it
+    # Dictionary to store per-model interaction data as lists of tuples
+    model_interaction_probabilities = {}
 
     # First loop: evaluate each model on its corresponding masked data
     for i, (file, mask) in enumerate(zip(eval_files, eval_masks)):
         print(f"Evaluating model {file} on data with current mask\n")
-        target_item_proba_sums.append(np.zeros(len(target_items), dtype=np.float32))
-        target_item_proba_maxs.append(np.array([float("-inf")] * len(target_items)))
-        target_item_proba_mins.append(np.array([float("inf")] * len(target_items)))
-        interaction_counts.append(0)
-
+        
+        model_interaction_probabilities[file] = []
+        
         # Clear GPU cache before each evaluation
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -716,18 +712,18 @@ def unlearn_recbole(
 
             # get probas of target items
             p_targets = torch.exp(raw_scores.index_select(1, target_idx) - logZ)
-            target_item_proba_sums[-1] += torch.sum(p_targets, dim=0).cpu().numpy()
-            target_item_proba_maxs[-1] = np.maximum(target_item_proba_maxs[-1], torch.max(p_targets, dim=0).cpu().numpy())
-            target_item_proba_mins[-1] = np.minimum(target_item_proba_mins[-1], torch.min(p_targets, dim=0).cpu().numpy())
-            interaction_counts[-1] += len(interaction)
+            
+            for j in range(len(interaction)):
+                item_seq = interaction[model.ITEM_SEQ][j].cpu().numpy()
+                item_id = interaction[model.ITEM_ID][j].cpu().numpy()
+                probabilities = p_targets[j].cpu().numpy()
+                
+                model_interaction_probabilities[file].append((item_seq, item_id, probabilities))
 
         result = {
             "test_result": test_result,
             "model_file": file,
             "mask_type": "current",
-            "target_item_proba_min": target_item_proba_mins[-1].tolist(),
-            "target_item_proba_max": target_item_proba_maxs[-1].tolist(),
-            "target_item_proba_avg": (target_item_proba_sums[-1] / interaction_counts[-1]).tolist(),
         }
         results.append(result)
         print(f"Results for model {file} only removing currently poisoned data: {test_result}")
@@ -740,20 +736,7 @@ def unlearn_recbole(
         
         print("\n")
         sys.stdout.flush()
-    
-    proba_results = {
-        "target_item_proba_sums": target_item_proba_sums,
-        "target_item_proba_maxs": target_item_proba_maxs,
-        "target_item_proba_mins": target_item_proba_mins,
-        "interaction_counts": interaction_counts,
-    }
 
-    unpoisoned_target_item_proba_sums = []
-    unpoisoned_target_item_proba_maxs = []
-    unpoisoned_target_item_proba_mins = []
-    unpoisoned_interaction_counts = []
-
-    # Now create unpoisoned data once for all models
     print("Creating unpoisoned dataset for all models...")
     unpoisoned_eval_df = orig_inter_df.loc[~eval_masks[-1]]
     unpoisoned_eval_dataset = dataset.copy(unpoisoned_eval_df)
@@ -765,10 +748,9 @@ def unlearn_recbole(
     # Second loop: evaluate all models on the same unpoisoned data
     for file in eval_files:
         print(f"Evaluating model {file} on unpoisoned data\n")
-        unpoisoned_target_item_proba_sums.append(np.zeros(len(target_items), dtype=np.float32))
-        unpoisoned_target_item_proba_maxs.append(np.array([float("-inf")] * len(target_items)))
-        unpoisoned_target_item_proba_mins.append(np.array([float("inf")] * len(target_items)))
-        unpoisoned_interaction_counts.append(0)
+        
+        unpoisoned_key = f"{file}_unpoisoned"
+        model_interaction_probabilities[unpoisoned_key] = []
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -787,18 +769,18 @@ def unlearn_recbole(
 
             # get probas of target items
             p_targets = torch.exp(raw_scores.index_select(1, target_idx) - logZ)
-            target_item_proba_sums[-1] += torch.sum(p_targets, dim=0).cpu().numpy()
-            target_item_proba_maxs[-1] = np.maximum(target_item_proba_maxs[-1], torch.max(p_targets, dim=0).cpu().numpy())
-            target_item_proba_mins[-1] = np.minimum(target_item_proba_mins[-1], torch.min(p_targets, dim=0).cpu().numpy())
-            interaction_counts[-1] += len(interaction)
+            
+            for j in range(len(interaction)):
+                item_seq = interaction[model.ITEM_SEQ][j].cpu().numpy()
+                item_id = interaction[model.ITEM_ID][j].cpu().numpy()
+                probabilities = p_targets[j].cpu().numpy()
+                
+                model_interaction_probabilities[unpoisoned_key].append((item_seq, item_id, probabilities))
 
         unpoisoned_result = {
             "test_result": unpoisoned_test_result,
             "model_file": file,
-            "mask_type": "current",
-            "target_item_proba_min": unpoisoned_target_item_proba_mins[-1].tolist(),
-            "target_item_proba_max": unpoisoned_target_item_proba_maxs[-1].tolist(),
-            "target_item_proba_avg": (unpoisoned_target_item_proba_sums[-1] / unpoisoned_interaction_counts[-1]).tolist(),
+            "mask_type": "unpoisoned",
         }
         results.append(unpoisoned_result)
 
@@ -806,11 +788,15 @@ def unlearn_recbole(
         print("\n")
         sys.stdout.flush()
 
-    # Clean up unpoisoned data after all evaluations
     del unpoisoned_eval_df, unpoisoned_eval_dataset, unpoisoned_test_data
     gc.collect()
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        torch.cuda.empty_cache()    
+
+    pickle_file = os.path.join(trainer.saved_model_file[:-len(".pth")], "model_interaction_probabilities.pkl")
+    with open(pickle_file, 'wb') as f:
+        pickle.dump(model_interaction_probabilities, f)
+    print(f"Saved model interaction probabilities to {pickle_file}")
 
     return results
 
