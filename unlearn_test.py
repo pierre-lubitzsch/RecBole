@@ -106,6 +106,13 @@ def main():
         action="store_true",
         help="if set, only evaluate instead of unlearning and then evaluating",
     )
+    parser.add_argument(
+        "--task_type",
+        type=str,
+        choices=["CF", "SBR", "NBR"],
+        help="Recommendation task",
+        default="SBR",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -128,6 +135,7 @@ def main():
         "unlearning_algorithm": args.unlearning_algorithm,
         "gpu_id": args.gpu_id,
         "eval_only": args.eval_only,
+        "task_type": args.task_type,
     }
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
