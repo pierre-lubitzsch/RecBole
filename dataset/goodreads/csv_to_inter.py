@@ -14,7 +14,7 @@ with open(input_filename, 'r', newline='') as csv_file:
         for i, row in enumerate(csv_reader):
             # For the header row, set the proper atomic file header.
             if i == 0:
-                row = ["userId:token", "movieId:token", "rating:float", "timestamp:float"]
+                row = ["user_id:token", "item_id:token", "rating:float", "timestamp:float"]
             else:
                 # Convert the timestamp (assumed to be at index 3) from a date string to a Unix timestamp.
                 dt_str = row[3]

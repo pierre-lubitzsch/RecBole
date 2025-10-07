@@ -368,6 +368,7 @@ def unlearn_recbole(
     dataset = create_dataset(config, unlearning=False, spam=spam)
     # save orig_df for forget set creation because inter_feat gets converted to torch during dataset.build()
     orig_inter_df = dataset.inter_feat.copy()
+
     removed_mask = np.zeros(len(orig_inter_df), dtype=bool)
     logger.info(dataset)
 
@@ -566,6 +567,29 @@ def unlearn_recbole(
         clean_forget_ds = dataset.copy(
             orig_inter_df.iloc[all_idx[~mask]]
         )
+
+        # note: forget_data and clean_forget_data should not have negative sampling, because we sample the negatives from the retain_loader instead during unlearning (if needed)
+        # we need to fix this inside the training implementation used by kookmin for example:
+        """
+        Traceback (most recent call last):
+        File "unlearn_test.py", line 162, in <module>
+            main()
+        File "unlearn_test.py", line 148, in main
+            unlearn_recbole(
+        File "/home/pierre/workspace/RecBole/recbole/quick_start/quick_start.py", line 648, in unlearn_recbole
+            forget_data,
+        File "/home/pierre/workspace/RecBole/recbole/trainer/trainer.py", line 1438, in unlearn
+            self.kookmin(
+        File "/home/pierre/workspace/RecBole/recbole/trainer/trainer.py", line 500, in kookmin
+            cur_grads = self._batch_grad(
+        File "/home/pierre/workspace/RecBole/recbole/trainer/trainer.py", line 1065, in _batch_grad
+            loss = loss_func(batch)
+        File "/home/pierre/workspace/RecBole/recbole/model/general_recommender/bpr.py", line 76, in calculate_loss
+            neg_item = interaction[self.NEG_ITEM_ID]
+        File "/home/pierre/workspace/RecBole/recbole/data/interaction.py", line 135, in __getitem__
+            return self.interaction[index]
+        KeyError: 'neg_item_id'
+        """
 
         forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam)
         clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam)

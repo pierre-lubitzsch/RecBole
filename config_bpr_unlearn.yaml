@@ -7,9 +7,7 @@ TIME_FIELD: timestamp
 load_col:
   inter: [user_id, item_id, rating, timestamp]
 
-train_neg_sample_args:
-  distribution: uniform
-  sample_num: 1
+train_neg_sample_args: ~
 
 eval_args:
   group_by: user
