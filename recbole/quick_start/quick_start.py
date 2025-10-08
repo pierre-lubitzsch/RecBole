@@ -448,9 +448,12 @@ def unlearn_recbole(
         
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
 
-    # train_data, valid_data, test_data = data_preparation(
-    #     config, dataset, spam=spam,
-    # )
+    train_data, valid_data, test_data = data_preparation(
+        config, dataset, spam=spam,
+    )
+
+    # negative item sampler used for unlearning later which can sample unseen items for all users
+    unlearning_sampler = train_data._sampler
 
     # Determine how many user sessions we need per request
     if unlearning_algorithm == "scif":
@@ -591,8 +594,8 @@ def unlearn_recbole(
         KeyError: 'neg_item_id'
         """
 
-        forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam)
-        clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam)
+        forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+        clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
 
         retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
 
@@ -660,7 +663,7 @@ def unlearn_recbole(
         # Temporarily modify batch size for this retain loader
         tmp = config["train_batch_size"]
         config["train_batch_size"] = retain_batch_size
-        current_retain_loader = data_preparation(config, current_retain_ds, unlearning=True, spam=spam)
+        current_retain_loader = data_preparation(config, current_retain_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
         config["train_batch_size"] = tmp
 
         # model training

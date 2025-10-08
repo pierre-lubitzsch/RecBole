@@ -141,7 +141,7 @@ def load_split_dataloaders(config):
     return train_data, valid_data, test_data
 
 
-def data_preparation(config, dataset, unlearning=False, spam=False):
+def data_preparation(config, dataset, unlearning=False, spam=False, sampler=None):
     """Split the dataset by :attr:`config['[valid|test]_eval_args']` and create training, validation and test dataloader.
 
     Note:
@@ -170,9 +170,12 @@ def data_preparation(config, dataset, unlearning=False, spam=False):
             train_dataset, valid_dataset, test_dataset = built_datasets
         
         if unlearning:
-            train_sampler = create_samplers(
-                config, dataset, built_datasets
-            )
+            if sampler is not None:
+                train_sampler = sampler
+            else:
+                train_sampler = create_samplers(
+                    config, dataset, built_datasets
+                )
         else:
             train_sampler, valid_sampler, test_sampler = create_samplers(
                 config, dataset, built_datasets
