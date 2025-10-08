@@ -489,6 +489,7 @@ class Trainer(AbstractTrainer):
         neg_grad_retain_sample_size=128,
         param_list=None,
     ):
+        # TODO: incorporate rating info for CF during unlearning. also check if this is done during retraining correctly
         self.move_optimizer_state(self.optimizer, self.device)
         self.model.train()
         loss_func = self.model.calculate_loss

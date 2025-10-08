@@ -408,8 +408,6 @@ def unlearn_recbole(
             names=["user_id", "item_id", "rating", "timestamp"],
             header=0,
         )
-    
-    # TODO: incorporate rating info for CF during unlearning. also check if this is done during retraining correctly
 
     print("loaded unlearning samples")
 
