@@ -612,10 +612,15 @@ class Trainer(AbstractTrainer):
         self,
         interaction,
         model,
+        task_type="SBR",
     ):
         self.optimizer.zero_grad()
 
-        raw_scores = model.full_sort_predict(interaction)
+        if task_type == "CF":
+            item_count = model.item_embedding.weight.shape[0]
+            raw_scores = model.full_sort_predict(interaction).view(-1, item_count)
+        else:
+            raw_scores = model.full_sort_predict(interaction)
 
         model_probs = F.softmax(raw_scores, dim=1)
 
@@ -628,15 +633,20 @@ class Trainer(AbstractTrainer):
         return loss.item()
     
     def get_embedding_for_contrastive_learning(self, interaction, model):
-        if not hasattr(model, 'ITEM_SEQ') or not hasattr(model, 'ITEM_SEQ_LEN'):
-            raise ValueError(f"Model {model} does not have ITEM_SEQ or ITEM_SEQ_LEN attributes. This method is designed to work with SBR models.")
+        if hasattr(model, 'ITEM_SEQ') and hasattr(model, 'ITEM_SEQ_LEN'): # SBR
+            item_seq = interaction[model.ITEM_SEQ]
+            item_seq_len = interaction[model.ITEM_SEQ_LEN]
+            
+            # forward returns sequence (session) representation
+            seq_output = model.forward(item_seq, item_seq_len)
+            return seq_output
+        elif hasattr(model, "user_embedding"): # CF
+            user = interaction[model.USER_ID]
+            user_e = model.get_user_embedding(user)
+            return user_e
+        else:
+            raise ValueError(f"Model {model} is not supported, specify here which layer to take for contrastive learning.")
 
-        item_seq = interaction[model.ITEM_SEQ]
-        item_seq_len = interaction[model.ITEM_SEQ_LEN]
-        
-        # forward returns sequence (session) representation
-        seq_output = model.forward(item_seq, item_seq_len)
-        return seq_output
 
     def unlearn_iterative_contrastive(self, unlearn_interaction, retain_interaction, model):
         self.optimizer.zero_grad()
@@ -749,6 +759,7 @@ class Trainer(AbstractTrainer):
         verbose=False,
         retain_samples_used_for_update=32,
         unlearn_iters_contrastive=8,
+        task_type="SBR",
     ):
         self.move_optimizer_state(self.optimizer, self.device)
         self.model.train()
@@ -757,7 +768,7 @@ class Trainer(AbstractTrainer):
         losses = []
         for batch_idx, interaction in enumerate(forget_data):
             interaction = interaction.to(self.device)
-            loss = self.unlearn_iterative_uniform_distribution(interaction, self.model)
+            loss = self.unlearn_iterative_uniform_distribution(interaction, self.model, task_type=task_type)
             losses.append(loss)
         
         print("Uniform pseudolabel learning average loss: ", np.mean(losses))
@@ -1029,7 +1040,9 @@ class Trainer(AbstractTrainer):
     ):
         params = []
 
-        if isinstance(model, GRU4Rec):
+        if hasattr(model, "user_embedding"):
+            params.append(model.user_embedding.weight)
+        elif isinstance(model, GRU4Rec):
             params.append(model.item_embedding.weight)
             params.append(model.dense.weight)
             if model.dense.bias is not None:
@@ -1394,6 +1407,7 @@ class Trainer(AbstractTrainer):
         unlearned_users_before=None,
         kookmin_init_rate=0.01,
         retrain_checkpoint_idx_to_match=None,
+        task_type="SBR",
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -1464,6 +1478,7 @@ class Trainer(AbstractTrainer):
                 saved=saved,
                 verbose=verbose,
                 retain_samples_used_for_update=retain_samples_used_for_update,
+                task_type=task_type,
             )
 
         if saved:

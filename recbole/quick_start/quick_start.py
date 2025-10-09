@@ -679,6 +679,7 @@ def unlearn_recbole(
             unlearned_users_before=unlearned_users_before,
             kookmin_init_rate=kookmin_init_rate,
             retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
+            task_type=config.task_type,
         )
 
         request_end_time = time.time()
