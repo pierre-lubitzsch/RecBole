@@ -731,49 +731,11 @@ def unlearn_recbole(
         cur_eval_dataset = dataset.copy(cur_eval_df)
         cur_train_data, cur_val_data, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam, sampler=unlearning_sampler)
 
-        # del cur_train_data, cur_val_data  # we only need test data for evaluation
-        # gc.collect()
-
-        for batch_idx, interaction in enumerate(cur_train_data):
-            for idx, x in enumerate(interaction):
-                print(idx)
-                print(x)
-                print("\n" * 10)
-                break
-            break
-            
-        for batch_idx, interaction in enumerate(cur_val_data):
-            for idx, x in enumerate(interaction):
-                print(idx)
-                print(x)
-                print("\n" * 10)
-                break
-            break
-
-        for batch_idx, interaction in enumerate(cur_test_data):
-            for idx, x in enumerate(interaction):
-                print(idx)
-                print(x)
-                print("\n" * 10)
-            interaction = interaction.to(model.device)
-            raw_scores = model.full_sort_predict(interaction)
-            target_idx = torch.as_tensor(target_items, device=raw_scores.device, dtype=torch.long)
-
-            # get softmax normalization constant
-            logZ = torch.logsumexp(raw_scores, dim=1, keepdim=True)
-
-            # get probas of target items
-            p_targets = torch.exp(raw_scores.index_select(1, target_idx) - logZ)
-            
-            for j in range(len(interaction)):
-                item_seq = interaction[model.ITEM_SEQ][j].cpu().numpy()
-                item_id = interaction[model.ITEM_ID][j].cpu().numpy()
-                probabilities = p_targets[j].cpu().numpy()
-                
-                model_interaction_probabilities[file].append((item_seq, item_id, probabilities))
+        del cur_train_data, cur_val_data  # we only need test data for evaluation
+        gc.collect()
 
         test_result = trainer.evaluate(
-            cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
+            cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
         )
 
         result = {

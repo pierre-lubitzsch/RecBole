@@ -1603,7 +1603,7 @@ class Trainer(AbstractTrainer):
 
     @torch.no_grad()
     def evaluate(
-        self, eval_data, load_best_model=True, model_file=None, show_progress=False
+        self, eval_data, load_best_model=True, model_file=None, show_progress=False, collect_target_probabilities=False, target_items=None,
     ):
         r"""Evaluate the model based on the eval data.
 
@@ -1633,6 +1633,10 @@ class Trainer(AbstractTrainer):
 
         self.model.eval()
 
+        probability_data = [] if collect_target_probabilities else None
+        if collect_target_probabilities and target_items is not None:
+            target_idx = torch.as_tensor(target_items, device=self.device, dtype=torch.long)
+
         if isinstance(eval_data, FullSortEvalDataLoader):
             eval_func = self._full_sort_batch_eval
             if self.item_tensor is None:
@@ -1652,12 +1656,27 @@ class Trainer(AbstractTrainer):
             if show_progress
             else eval_data
         )
-        # iter_data = eval_data
 
         num_sample = 0
         for batch_idx, batched_data in enumerate(iter_data):
             num_sample += len(batched_data)
             interaction, scores, positive_u, positive_i = eval_func(batched_data)
+
+            if collect_target_probabilities and target_items is not None:
+                # calculate probabilities for target items
+                logZ = torch.logsumexp(scores, dim=1, keepdim=True)
+                p_targets = torch.exp(scores.index_select(1, target_idx) - logZ)
+                
+                for j in range(len(interaction)):
+                    item_seq = interaction[self.model.ITEM_SEQ][j].cpu().numpy() if hasattr(self.model, 'ITEM_SEQ') else None
+                    probabilities = p_targets[j].cpu().numpy()
+                    probability_data.append({
+                        'item_seq': item_seq,
+                        'positive_item': positive_i[j].item(),
+                        'target_probabilities': probabilities,
+                        'user_id': interaction[self.model.USER_ID][j].item() if hasattr(self.model, 'USER_ID') else None
+                    })
+
             if self.gpu_available and show_progress:
                 iter_data.set_postfix_str(
                     set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
@@ -1671,6 +1690,9 @@ class Trainer(AbstractTrainer):
         if not self.config["single_spec"]:
             result = self._map_reduce(result, num_sample)
         self.wandblogger.log_eval_metrics(result, head="eval")
+        
+        if collect_target_probabilities:
+            return result, probability_data
         return result
 
     def _map_reduce(self, result, num_sample):
