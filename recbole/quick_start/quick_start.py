@@ -703,6 +703,15 @@ def unlearn_recbole(
     # Dictionary to store per-model interaction data as lists of tuples
     model_interaction_probabilities = {}
 
+    print("Original Model:")
+    print(f"Evaluating model {base_model_path} on data with current mask\n")
+    test_result = trainer.evaluate(
+        test_data, load_best_model=True, show_progress=True, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
+    )
+    if spam:
+        test_result, probability_data = test_result
+    print(test_result)
+
     # First loop: evaluate each model on its corresponding masked data
     for i, (file, mask) in enumerate(zip(eval_files, eval_masks)):
         print(f"Evaluating model {file} on data with current mask\n")
