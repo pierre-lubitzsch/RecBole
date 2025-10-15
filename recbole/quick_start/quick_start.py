@@ -734,6 +734,22 @@ def unlearn_recbole(
         # del cur_train_data, cur_val_data  # we only need test data for evaluation
         # gc.collect()
 
+        for batch_idx, interaction in enumerate(cur_train_data):
+            for idx, x in enumerate(interaction):
+                print(idx)
+                print(x)
+                print("\n" * 10)
+                break
+            break
+            
+        for batch_idx, interaction in enumerate(cur_val_data):
+            for idx, x in enumerate(interaction):
+                print(idx)
+                print(x)
+                print("\n" * 10)
+                break
+            break
+
         for batch_idx, interaction in enumerate(cur_test_data):
             for idx, x in enumerate(interaction):
                 print(idx)
