@@ -773,26 +773,8 @@ def unlearn_recbole(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        for batch_idx, interaction in enumerate(unpoisoned_test_data):
-            interaction = interaction.to(model.device)
-            raw_scores = model.full_sort_predict(interaction)
-            target_idx = torch.as_tensor(target_items, device=raw_scores.device, dtype=torch.long)
-
-            # get softmax normalization constant
-            logZ = torch.logsumexp(raw_scores, dim=1, keepdim=True)
-
-            # get probas of target items
-            p_targets = torch.exp(raw_scores.index_select(1, target_idx) - logZ)
-            
-            for j in range(len(interaction)):
-                item_seq = interaction[model.ITEM_SEQ][j].cpu().numpy()
-                item_id = interaction[model.ITEM_ID][j].cpu().numpy()
-                probabilities = p_targets[j].cpu().numpy()
-                
-                model_interaction_probabilities[unpoisoned_key].append((item_seq, item_id, probabilities))
-
         unpoisoned_test_result = trainer.evaluate(
-            unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file,
+            unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
         )
 
         unpoisoned_result = {
