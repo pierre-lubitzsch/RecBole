@@ -767,7 +767,7 @@ def unlearn_recbole(
         )
         if spam:
             unpoisoned_test_result, probability_data = unpoisoned_test_result
-            model_interaction_probabilities[file] = probability_data
+            model_interaction_probabilities[unpoisoned_key] = probability_data
 
         unpoisoned_result = {
             "test_result": unpoisoned_test_result,
