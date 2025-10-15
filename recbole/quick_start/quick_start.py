@@ -452,14 +452,13 @@ def unlearn_recbole(
     )
 
     # sanity check
-    print("evaluation of original model:\n")
-    test_result = trainer.evaluate(
-        test_data, load_best_model=True, show_progress=True, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
-    )
-    if spam:
-        test_result, probability_data = test_result
-    print(test_result)
-    exit(0)
+    # print("evaluation of original model:\n")
+    # test_result = trainer.evaluate(
+    #     test_data, load_best_model=True, show_progress=True, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
+    # )
+    # if spam:
+    #     test_result, probability_data = test_result
+    # print(test_result)
 
     # negative item sampler used for unlearning later which can sample unseen items for all users
     unlearning_sampler = train_data._sampler
