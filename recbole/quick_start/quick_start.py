@@ -385,6 +385,7 @@ def unlearn_recbole(
             metadata = json.load(f)
             target_items = np.array(list(map(int, metadata["target_items"])), dtype=np.int64)
     else:
+        target_items = None
         unlearning_samples_path = os.path.join(
             config["data_path"],
             f"{config['dataset']}_unlearn_pairs_{config['unlearning_sample_selection_method']}"
@@ -734,9 +735,15 @@ def unlearn_recbole(
         del cur_train_data, cur_val_data  # we only need test data for evaluation
         gc.collect()
 
-        test_result = trainer.evaluate(
-            cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
-        )
+        if spam:
+            test_result, probability_data = trainer.evaluate(
+                cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            )
+            model_interaction_probabilities[file] = probability_data
+        else:
+            test_result = trainer.evaluate(
+                cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            )
 
         result = {
             "test_result": test_result,
@@ -768,14 +775,19 @@ def unlearn_recbole(
         print(f"Evaluating model {file} on unpoisoned data\n")
         
         unpoisoned_key = f"{file}_unpoisoned"
-        model_interaction_probabilities[unpoisoned_key] = []
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        unpoisoned_test_result = trainer.evaluate(
-            unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
-        )
+        if spam:
+            unpoisoned_test_result, probability_data = trainer.evaluate(
+                unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            )
+            model_interaction_probabilities[unpoisoned_key] = probability_data
+        else:
+            unpoisoned_test_result = trainer.evaluate(
+                unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            )
 
         unpoisoned_result = {
             "test_result": unpoisoned_test_result,
@@ -793,10 +805,11 @@ def unlearn_recbole(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()    
 
-    pickle_file = os.path.join(trainer.saved_model_file[:-len(".pth")], "model_interaction_probabilities.pkl")
-    with open(pickle_file, 'wb') as f:
-        pickle.dump(model_interaction_probabilities, f)
-    print(f"Saved model interaction probabilities to {pickle_file}")
+    if spam:
+        pickle_file = os.path.join(trainer.saved_model_file[:-len(".pth")], "model_interaction_probabilities.pkl")
+        with open(pickle_file, 'wb') as f:
+            pickle.dump(model_interaction_probabilities, f)
+        print(f"Saved model interaction probabilities to {pickle_file}")
 
     return results
 
