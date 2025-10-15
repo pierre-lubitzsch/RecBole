@@ -6,47 +6,74 @@ import csv
 
 
 def main():
-    all_records = []
     seen = set()
+    temp_file = 'temp_unsorted.tsv'
     
-    for file in sorted(os.listdir(".")):
-        if not file.endswith(".jsonl.gz"):
-            continue
+    # First pass: deduplicate and write to temp file
+    print("Pass 1: Deduplicating and writing to temp file...")
+    with open(temp_file, 'w', newline='', encoding='utf-8') as out_f:
+        writer = csv.DictWriter(out_f, fieldnames=['user_id', 'item_id', 'rating', 'timestamp'], delimiter='\t')
         
-        print(f"Processing {file}...")
-        
-        with gzip.open(file, 'rt', encoding='utf-8') as f:
-            for line in f:
-                try:
-                    data = json.loads(line.strip())
-                    
-                    record = {
-                        'user_id': data.get('user_id'),
-                        'item_id': data.get('asin'),
-                        'rating': data.get('rating'),
-                        'timestamp': data.get('timestamp')
-                    }
-                    
-                    key = (record["user_id"], record["item_id"], record["rating"], record["timestamp"])
-                    if all(map(lambda x: x is not None, key)) and key not in seen:
-                        all_records.append(record)
-                        seen.add(key)
+        record_count = 0
+        for file in sorted(os.listdir(".")):
+            if not file.endswith(".jsonl.gz"):
+                continue
+            
+            print(f"  Processing {file}...")
+            
+            with gzip.open(file, 'rt', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        data = json.loads(line.strip())
                         
-                except json.JSONDecodeError as e:
-                    print(f"Error parsing line in {file}: {e}")
-                    continue
+                        user_id = data.get('user_id')
+                        item_id = data.get('asin')
+                        rating = data.get('rating')
+                        timestamp = data.get('timestamp')
+                        
+                        key = (user_id, item_id, rating, timestamp)
+                        if all(map(lambda x: x is not None, key)) and key not in seen:
+                            seen.add(key)
+                            writer.writerow({
+                                'user_id': user_id,
+                                'item_id': item_id,
+                                'rating': rating,
+                                'timestamp': timestamp
+                            })
+                            record_count += 1
+                            
+                            if record_count % 100000 == 0:
+                                print(f"    Written {record_count} records...")
+                            
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing line in {file}: {e}")
+                        continue
     
-    print(f"Total records collected: {len(all_records)}")
+    print(f"Total unique records: {record_count}")
     
-    all_records.sort(key=lambda x: (x['user_id'], x['timestamp']))
+    # Clear seen set to free memory
+    del seen
     
+    # Second pass: sort the temp file
+    print("Pass 2: Sorting records...")
+    all_records = []
+    with open(temp_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f, fieldnames=['user_id', 'item_id', 'rating', 'timestamp'], delimiter='\t')
+        all_records = list(reader)
+    
+    all_records.sort(key=lambda x: (x['user_id'], float(x['timestamp'])))
+    
+    # Write final sorted output
     output_file = 'amazon_reviews.inter'
-    print(f"Writing to {output_file}...")
+    print(f"Writing sorted output to {output_file}...")
     
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
         f.write('user_id:token\titem_id:token\trating:float\ttimestamp:float\n')
         writer = csv.DictWriter(f, fieldnames=['user_id', 'item_id', 'rating', 'timestamp'], delimiter='\t')
         writer.writerows(all_records)
+    
+    # Clean up temp file
+    os.unlink(temp_file)
     
     print(f"Done! Written {len(all_records)} records to {output_file}")
 
