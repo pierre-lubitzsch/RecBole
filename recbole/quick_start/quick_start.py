@@ -452,12 +452,13 @@ def unlearn_recbole(
     )
 
     # sanity check
+    print("evaluation of original model:\n")
     test_result = trainer.evaluate(
-        test_data, load_best_model=True, show_progress=config["show_progress"], model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
+        test_data, load_best_model=True, show_progress=False, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
     )
     if spam:
         test_result, probability_data = test_result
-
+    exit(0)
 
     # negative item sampler used for unlearning later which can sample unseen items for all users
     unlearning_sampler = train_data._sampler
@@ -721,7 +722,7 @@ def unlearn_recbole(
         gc.collect()
 
         test_result = trainer.evaluate(
-            cur_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            cur_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
         )
         if spam:
             test_result, probability_data = test_result
@@ -762,7 +763,7 @@ def unlearn_recbole(
             torch.cuda.empty_cache()
 
         unpoisoned_test_result = trainer.evaluate(
-            unpoisoned_test_data, load_best_model=True, show_progress=config["show_progress"], model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            unpoisoned_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
         )
         if spam:
             unpoisoned_test_result, probability_data = unpoisoned_test_result
