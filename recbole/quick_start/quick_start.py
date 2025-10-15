@@ -735,6 +735,10 @@ def unlearn_recbole(
         gc.collect()
 
         for batch_idx, interaction in enumerate(cur_test_data):
+            for idx, x in enumerate(interaction):
+                print(idx)
+                print(x)
+                print("\n" * 10)
             interaction = interaction.to(model.device)
             raw_scores = model.full_sort_predict(interaction)
             target_idx = torch.as_tensor(target_items, device=raw_scores.device, dtype=torch.long)
