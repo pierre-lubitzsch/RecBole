@@ -729,10 +729,10 @@ def unlearn_recbole(
         # test on data with just current poisoned data removed
         cur_eval_df = orig_inter_df.loc[~mask]
         cur_eval_dataset = dataset.copy(cur_eval_df)
-        cur_train_data, cur_val_data, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam)
+        cur_train_data, cur_val_data, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam, sampler=unlearning_sampler)
 
-        del cur_train_data, cur_val_data  # we only need test data for evaluation
-        gc.collect()
+        # del cur_train_data, cur_val_data  # we only need test data for evaluation
+        # gc.collect()
 
         for batch_idx, interaction in enumerate(cur_test_data):
             for idx, x in enumerate(interaction):
