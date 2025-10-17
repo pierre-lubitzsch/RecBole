@@ -2,7 +2,7 @@ import gzip
 import json
 import os
 import argparse
-
+import re
 
 def extract_sensitive_items(sensitive_categories, output_file='sensitive_items.txt', input_files=None):
     """
@@ -10,14 +10,20 @@ def extract_sensitive_items(sensitive_categories, output_file='sensitive_items.t
     Works with Amazon metadata files that contain product information.
     
     Args:
-        sensitive_categories: List of category keywords to search for (case-insensitive)
+        sensitive_categories: List of category keywords to search for (case-insensitive, whole-word matching)
         output_file: File to write sensitive item IDs to
         input_files: List of specific metadata files to process. If None, process all metadata files
     """
     sensitive_items = set()
     
+    # Compile regex patterns for whole-word matching (case-insensitive)
+    # \b ensures we match whole words only
+    keyword_patterns = [re.compile(r'\b' + re.escape(keyword.lower()) + r'\b', re.IGNORECASE) 
+                        for keyword in sensitive_categories]
+    
     print(f"Searching for items in categories: {sensitive_categories}")
     print("Note: This script processes METADATA files (meta_*.jsonl.gz), not review files")
+    print("Note: Using whole-word matching (e.g., 'ipa' won't match 'hipa')")
     
     # Determine which files to process
     if input_files:
@@ -109,11 +115,11 @@ def extract_sensitive_items(sensitive_categories, output_file='sensitive_items.t
                         features,
                         details,
                         store
-                    ]).lower()
+                    ])
                     
-                    # Check if any sensitive category keyword is in the combined text
-                    for keyword in sensitive_categories:
-                        if keyword.lower() in all_text:
+                    # Check if any sensitive category keyword is in the combined text (whole-word matching)
+                    for pattern in keyword_patterns:
+                        if pattern.search(all_text):
                             sensitive_items.add(item_id)
                             item_count += 1
                             break
@@ -150,7 +156,6 @@ def extract_sensitive_items(sensitive_categories, output_file='sensitive_items.t
     
     return sensitive_items
 
-
 def main():
     parser = argparse.ArgumentParser(
         description='Identify sensitive items from Amazon metadata files',
@@ -171,19 +176,23 @@ Examples:
   
   # Look for different sensitive categories (e.g., alcohol)
   python identify_sensitive_items.py --categories wine beer alcohol liquor vodka whiskey --output alcohol_items.txt
+  
+  # Search for IPA beer (won't match words containing 'ipa' like 'participant')
+  python identify_sensitive_items.py --categories ipa --output ipa_items.txt
 
 Important:
   - This script requires METADATA files (meta_*.jsonl.gz), NOT review files
   - Metadata files contain product information: title, description, categories
   - Review files only contain user reviews and ratings (not useful for this purpose)
   - Download metadata files from Amazon dataset separately if you don't have them
+  - Keywords use whole-word matching (e.g., 'ipa' won't match 'hipa' or 'participant')
         """
     )
     parser.add_argument(
         '--categories',
         nargs='+',
         default=['meat', 'beef', 'pork', 'chicken', 'lamb', 'turkey'],
-        help='Category keywords to search for (case-insensitive)'
+        help='Category keywords to search for (case-insensitive, whole-word matching)'
     )
     parser.add_argument(
         '--output',
@@ -200,7 +209,6 @@ Important:
     args = parser.parse_args()
     
     extract_sensitive_items(args.categories, args.output, args.files)
-
 
 if __name__ == "__main__":
     main()
