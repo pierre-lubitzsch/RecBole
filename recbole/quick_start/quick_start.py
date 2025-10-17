@@ -372,6 +372,7 @@ def unlearn_recbole(
     removed_mask = np.zeros(len(orig_inter_df), dtype=bool)
     logger.info(dataset)
 
+    target_items = None
     if spam:
         unlearning_samples_path = os.path.join(
             config["data_path"],
@@ -385,7 +386,6 @@ def unlearn_recbole(
             metadata = json.load(f)
             target_items = np.array(list(map(int, metadata["target_items"])), dtype=np.int64)
     else:
-        target_items = None
         unlearning_samples_path = os.path.join(
             config["data_path"],
             f"{config['dataset']}_unlearn_pairs_{config['unlearning_sample_selection_method']}"
