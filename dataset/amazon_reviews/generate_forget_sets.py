@@ -178,7 +178,7 @@ def main():
     
     # Calculate target forget set size
     target_size = int(total_count * args.forget_ratio)
-    print(f"\nTarget forget set size: {target_size} ({args.forget_ratio * 100:.3f}% of dataset)")
+    print(f"\nTarget forget set size: {target_size} ({args.forget_ratio * 100}% of dataset)")
     
     # Check if we have enough sensitive interactions
     total_sensitive = sum(len(interactions) for interactions in sensitive_interactions.values())
@@ -191,7 +191,10 @@ def main():
     forget_set = sample_forget_set(sensitive_interactions, target_size, args.seed)
     
     # Write outputs
-    forget_file = f"{args.output_prefix}_forget_p{args.forget_ratio}_seed{args.seed}.inter"
+    category = args.sensitive_items[:-len('.txt')].split("_")[-1]
+    forget_file = f"{args.dataset[:-len('.inter')]}_unlearn_pairs_sensitive_category_{category}"
+            + f"_seed_{args.seed}"
+            + f"_unlearning_fraction_{args.forget_ratio}.inter"
     
     write_dataset(forget_set, forget_file)
     
