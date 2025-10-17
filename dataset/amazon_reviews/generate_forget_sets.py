@@ -192,9 +192,7 @@ def main():
     
     # Write outputs
     category = args.sensitive_items[:-len('.txt')].split("_")[-1]
-    forget_file = f"{args.dataset[:-len('.inter')]}_unlearn_pairs_sensitive_category_{category}"
-            + f"_seed_{args.seed}"
-            + f"_unlearning_fraction_{args.forget_ratio}.inter"
+    forget_file = f"{args.dataset[:-len('.inter')]}_unlearn_pairs_sensitive_category_{category}_seed_{args.seed}_unlearning_fraction_{args.forget_ratio}.inter"
     
     write_dataset(forget_set, forget_file)
     
