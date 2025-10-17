@@ -7,8 +7,10 @@ categories=("meat" "alcohol")
 
 declare -A categories_to_keywords=( ["meat"]="meat beef pork chicken lamb turkey bacon ham sausage salami ham" ["alcohol"]="alcohol beer wine liquor whisky whiskey vodka gin rum bourbon tequila brandy cognac IPA pilsner champagne prosecco" )
 
+echo "${categories_to_keywords['meat']}"
+
 for category in "${categories[@]}"; do
-    python identify_sensitive_items.py --output "sensitive_parent_asins_${category}.txt" --categories "${categories_to_keywords[$category]}"
+    python identify_sensitive_items.py --output "sensitive_parent_asins_${category}.txt" --categories ${categories_to_keywords[$category]} --files Grocery_and_Gourmet_Food.jsonl.gz Handmade_Products.jsonl.gz Health_and_Household.jsonl.gz Health_and_Personal_Care.jsonl.gz Home_and_Kitchen.jsonl.gz Industrial_and_Scientific.jsonl.gz Magazine_Subscriptions.jsonl.gz Pet_Supplies.jsonl.gz Subscription_Boxes.jsonl.gz Unknown.jsonl.gz
     python get_sensitive_asins_from_sensitive_parent_asins.py --input "sensitive_parent_asins_${category}.txt" --output "sensitive_asins_${category}.txt"
 done
 
