@@ -21,9 +21,12 @@ eval_args:
   topk: [10, 20]
   valid_metric: Recall@20
 
+user_inter_num_interval: "[5, inf)"
+item_inter_num_interval: "[5, inf)"
+
 use_gpu: True
 gpu_id: 0
-show_progress: True
+show_progress: False
 epochs: 100
 n_layers: 2
 loss: bpr

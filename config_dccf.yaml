@@ -12,9 +12,12 @@ eval_args:
   order: TO
   split: {RS: [0.8, 0.1, 0.1]}
 
+user_inter_num_interval: "[5, inf)"
+item_inter_num_interval: "[5, inf)"
+
 use_gpu: False
 gpu_id: ""
-show_progress: True
+show_progress: False
 
 MODEL_INPUT_TYPE: pairwise
 embedding_size: 64

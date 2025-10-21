@@ -20,6 +20,9 @@ eval_args:
   topk: [10, 20]
   valid_metric: Recall@20
 
+user_inter_num_interval: "[5, inf)"
+item_inter_num_interval: "[5, inf)"
+
 # eval_args:
 #   group_by: user
 #   order: TO
@@ -30,7 +33,7 @@ learning_rate: 0.001
 use_gpu: True
 gpu_id: 0
 early_stop: True
-show_progress: True
+show_progress: False
 epochs: 100
 
 
