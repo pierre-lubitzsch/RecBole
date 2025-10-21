@@ -35,7 +35,6 @@ reg_weight: 1e-4
 learning_rate: 1e-3
 learner: adam
 early_stop: True
-show_progress: True
 
 
 # eval_args:
