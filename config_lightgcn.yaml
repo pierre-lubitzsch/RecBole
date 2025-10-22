@@ -3,10 +3,11 @@ ITEM_ID_FIELD: item_id
 RATING_FIELD: rating
 TIME_FIELD: timestamp
 
-# goodreads dataset
 load_col:
   inter: [user_id, item_id, rating, timestamp]
 
+threshold:
+  rating: 3.5
 
 train_neg_sample_args:
   distribution: uniform
