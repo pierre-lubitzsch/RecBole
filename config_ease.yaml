@@ -31,7 +31,7 @@ reg_weight: 250  # Regularization weight (try 100-500)
 
 # Runtime
 use_gpu: True  # EASE can use GPU for matrix operations
-gpu_id: ""
+gpu_id: 0
 early_stop: False  # No iterative training
 show_progress: False
 epochs: 1  # Only needs 1 epoch to solve closed-form solution

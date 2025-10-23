@@ -17,8 +17,12 @@ for model in "${models[@]}"; do
     for dataset in "${datasets[@]}"; do
         model_lower=$(echo "$model" | tr '[:upper:]' '[:lower:]')
         config_file="configs/config_${model_lower}.yaml"
+        session_name="${model_lower}"
+        log_file="cluster_log/${model_lower}_${dataset}_seed${seed}.log"
 
-        echo "Submitting job with model: $model, dataset: $dataset, seed: $seed, config: $config_file"
-        python run_recbole.py --model $model --dataset $dataset --seed $seed --config_files $config_file
+        echo "Starting tmux session '${session_name}' for model: $model"
+
+        # Create tmux session with the model name and run python command
+        tmux new -d -s "${session_name}" "conda activate env && python run_recbole.py --model $model --dataset $dataset --seed $seed --config_files $config_file 2>&1 | tee $log_file"
     done
 done
