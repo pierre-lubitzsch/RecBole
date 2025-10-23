@@ -11,6 +11,7 @@ declare -A categories_to_keywords=( ["meat"]="meat beef pork chicken lamb turkey
 files_for_asins="../amazon_reviews/Grocery_and_Gourmet_Food.jsonl.gz"
 
 files_for_parent_asins="../amazon_reviews/meta_Grocery_and_Gourmet_Food.jsonl.gz"
+rating_threshold=3.5
 
 for category in "${categories[@]}"; do
     python identify_sensitive_items.py --output "sensitive_parent_asins_${category}.txt" --categories ${categories_to_keywords[$category]} --files ${files_for_parent_asins}
@@ -22,7 +23,7 @@ for sensitive_item in "${sensitive_items[@]}"; do
     for seed in "${seeds[@]}"; do
         for forget_ratio in "${forget_ratios[@]}"; do
             echo "Generating forget sets for sensitive items: ${sensitive_item}, seed: ${seed}, forget ratio: ${forget_ratio}, dataset: ${dataset}"
-            python generate_forget_sets.py --sensitive-items $sensitive_item --seed $seed --forget-ratio $forget_ratio --dataset $dataset
+            python generate_forget_sets.py --sensitive-items $sensitive_item --seed $seed --forget-ratio $forget_ratio --dataset $dataset --rating-threshold $rating_threshold
         done
     done
 done

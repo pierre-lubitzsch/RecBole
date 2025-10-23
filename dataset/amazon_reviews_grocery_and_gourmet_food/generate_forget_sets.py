@@ -17,7 +17,7 @@ def load_sensitive_items(sensitive_items_file):
     return sensitive_items
 
 
-def load_interactions_for_forget_set(dataset_file, sensitive_items):
+def load_interactions_for_forget_set(dataset_file, sensitive_items, threshold=None):
     """
     Stream through interactions and only keep those with sensitive items.
     Memory efficient - doesn't load the entire dataset.
@@ -45,8 +45,8 @@ def load_interactions_for_forget_set(dataset_file, sensitive_items):
         for row in reader:
             total_count += 1
             
-            # Only keep interactions with sensitive items
-            if row['item_id'] in sensitive_items:
+            # Only keep interactions with sensitive items which are used in training (aka have a rating above threshold)
+            if row['item_id'] in sensitive_items and (threshold is None or row['rating'] >= threshold):
                 sensitive_interactions[row['user_id']].append(row)
     
     total_sensitive = sum(len(interactions) for interactions in sensitive_interactions.values())
@@ -150,6 +150,12 @@ def main():
         default='forget_set',
         help='Prefix for output files (default: forget_set)'
     )
+    parser.add_argument(
+        "--rating-threshold",
+        type=float,
+        default=None,
+        help="For implicit collaborative filtering only binary signals are used (interaction between user and item: yes/no)"
+    )
     
     args = parser.parse_args()
     
@@ -170,7 +176,7 @@ def main():
     sensitive_items = load_sensitive_items(args.sensitive_items)
     
     # Stream through dataset and only keep sensitive interactions
-    sensitive_interactions, total_count = load_interactions_for_forget_set(args.dataset, sensitive_items)
+    sensitive_interactions, total_count = load_interactions_for_forget_set(args.dataset, sensitive_items, threshold=args.rating_threshold)
     
     if not sensitive_interactions:
         print("Error: No users found with sensitive item interactions!")

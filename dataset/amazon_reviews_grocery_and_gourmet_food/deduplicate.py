@@ -3,9 +3,10 @@ import argparse
 import os
 import subprocess
 import sys
+import collections
 
 
-def deduplicate_with_external_sort(input_file, output_file, has_header=True):
+def deduplicate_with_external_sort(input_file, output_file, has_header=True, min_interactions=5):
     """
     Remove duplicate interactions using external sort (Unix sort command).
     This is extremely memory efficient as it uses disk-based sorting.
@@ -23,7 +24,7 @@ def deduplicate_with_external_sort(input_file, output_file, has_header=True):
         subprocess.run(['sort', '--version'], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("Error: 'sort' command not found. Falling back to Python implementation.")
-        return deduplicate_in_memory(input_file, output_file, has_header)
+        return deduplicate_in_memory(input_file, output_file, has_header, min_interactions)
     
     # Count total records
     print("Counting total records...")
@@ -88,24 +89,77 @@ def deduplicate_with_external_sort(input_file, output_file, has_header=True):
     subprocess.run(sort_cmd, check=True)
     
     os.unlink(temp_unique)
+
+    # Step 4: Iterative filtering to ensure both users and items meet threshold
+    print(f"Step 4: Iterative filtering (users >= {min_interactions} interactions, items >= {min_interactions} interactions)...")
+    
+    # Load all data into memory for iterative filtering
+    all_records = []
+    with open(temp_final, 'r', encoding='utf-8') as f_in:
+        for line in f_in:
+            parts = line.strip().split('\t')
+            all_records.append({
+                'user_id': parts[0],
+                'item_id': parts[1],
+                'rating': parts[2],
+                'timestamp': parts[3]
+            })
+    
+    os.unlink(temp_final)
+    
+    iteration = 0
+    prev_size = len(all_records)
+    
+    while True:
+        iteration += 1
+        print(f"  Iteration {iteration}: {len(all_records)} records")
+        
+        # Count user and item frequencies in current dataset
+        current_user_count = collections.defaultdict(int)
+        current_item_count = collections.defaultdict(int)
+        
+        for record in all_records:
+            current_user_count[record['user_id']] += 1
+            current_item_count[record['item_id']] += 1
+        
+        # Filter: keep only records where both user and item meet threshold
+        filtered_records = [
+            record for record in all_records
+            if current_user_count[record['user_id']] >= min_interactions and current_item_count[record['item_id']] >= min_interactions
+        ]
+        
+        # Check for convergence
+        if len(filtered_records) == len(all_records):
+            print(f"  Converged after {iteration} iteration(s)")
+            break
+        
+        all_records = filtered_records
+        
+        # Safety check to prevent infinite loops
+        if iteration > 100:
+            print("  Warning: Stopped after 100 iterations")
+            break
+    
+    final_count = len(all_records)
+    records_removed_by_filtering = unique_count - final_count
     
     # Add header and write final output
     print(f"Writing final output to {output_file}...")
     with open(output_file, 'w', encoding='utf-8') as f_out:
         f_out.write('user_id:token\titem_id:token\trating:float\ttimestamp:float\n')
-        with open(temp_final, 'r', encoding='utf-8') as f_in:
-            f_out.write(f_in.read())
-    
-    os.unlink(temp_final)
+        for record in all_records:
+            f_out.write(f"{record['user_id']}\t{record['item_id']}\t{record['rating']}\t{record['timestamp']}\n")
     
     print(f"\nTotal records processed: {total_count}")
-    print(f"Unique records: {unique_count}")
+    print(f"Unique records after deduplication: {unique_count}")
     print(f"Duplicates removed: {duplicate_count}")
+    print(f"Records after filtering: {final_count}")
+    print(f"Records removed by filtering: {records_removed_by_filtering}")
     print(f"Duplicate rate: {duplicate_count/total_count*100:.2f}%")
-    print(f"Done! Written {unique_count} unique records to {output_file}")
+    print(f"Done! Written {final_count} records to {output_file}")
 
 
-def deduplicate_in_memory(input_file, output_file, has_header=True):
+def deduplicate_in_memory(input_file, output_file, has_header=True, min_interactions=5):
     """
     Fallback: In-memory deduplication using streaming approach.
     Only keeps previous record in memory for comparison.
@@ -183,37 +237,60 @@ def deduplicate_in_memory(input_file, output_file, has_header=True):
     
     records.sort(key=lambda x: (x['user_id'], float(x['timestamp'])))
     
+    # Step 4: Iterative filtering
+    print(f"Step 4: Iterative filtering (users >= {min_interactions} interactions, items >= {min_interactions} interactions)...")
+    
+    iteration = 0
+    
+    while True:
+        iteration += 1
+        print(f"  Iteration {iteration}: {len(records)} records")
+        
+        # Count user and item frequencies in current dataset
+        current_user_count = collections.defaultdict(int)
+        current_item_count = collections.defaultdict(int)
+        
+        for record in records:
+            current_user_count[record['user_id']] += 1
+            current_item_count[record['item_id']] += 1
+        
+        # Filter: keep only records where both user and item meet threshold
+        filtered_records = [
+            record for record in records
+            if current_user_count[record['user_id']] >= min_interactions and current_item_count[record['item_id']] >= min_interactions
+        ]
+        
+        # Check for convergence
+        if len(filtered_records) == len(records):
+            print(f"  Converged after {iteration} iteration(s)")
+            break
+        
+        records = filtered_records
+        
+        # Safety check to prevent infinite loops
+        if iteration > 100:
+            print("  Warning: Stopped after 100 iterations")
+            break
+    
+    final_count = len(records)
+    records_removed_by_filtering = unique_count - final_count
+    
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
         f.write('user_id:token\titem_id:token\trating:float\ttimestamp:float\n')
         writer = csv.DictWriter(f, fieldnames=['user_id', 'item_id', 'rating', 'timestamp'], delimiter='\t')
         writer.writerows(records)
     
     print(f"\nTotal records processed: {total_count}")
-    print(f"Unique records: {unique_count}")
+    print(f"Unique records after deduplication: {unique_count}")
     print(f"Duplicates removed: {duplicate_count}")
+    print(f"Records after filtering: {final_count}")
+    print(f"Records removed by filtering: {records_removed_by_filtering}")
     print(f"Duplicate rate: {duplicate_count/total_count*100:.2f}%")
-    print(f"Done! Written {unique_count} unique records to {output_file}")
+    print(f"Done! Written {final_count} records to {output_file}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Remove duplicate interactions from Amazon reviews dataset (memory efficient)',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Deduplicate the raw file (uses external sort if available)
-  python deduplicate.py
-  
-  # Custom input/output files
-  python deduplicate.py --input my_raw_data.inter --output my_clean_data.inter
-  
-  # Force in-memory method (if external sort fails)
-  python deduplicate.py --no-external-sort
-
-This script uses Unix 'sort' command for memory-efficient external sorting when available.
-This allows processing files much larger than available RAM.
-        """
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         '--input',
         default='amazon_reviews_raw.inter',
@@ -234,6 +311,12 @@ This allows processing files much larger than available RAM.
         action='store_true',
         help='Input file has no header line (e.g., temp_unsorted.tsv)'
     )
+    parser.add_argument(
+        '--min-interactions',
+        type=int,
+        default=5,
+        help='Minimum number of interactions required for users and items (default: 5)'
+    )
     
     args = parser.parse_args()
     
@@ -252,9 +335,9 @@ This allows processing files much larger than available RAM.
             return
     
     if args.no_external_sort:
-        deduplicate_in_memory(args.input, args.output, has_header=not args.no_header)
+        deduplicate_in_memory(args.input, args.output, has_header=not args.no_header, min_interactions=args.min_interactions)
     else:
-        deduplicate_with_external_sort(args.input, args.output, has_header=not args.no_header)
+        deduplicate_with_external_sort(args.input, args.output, has_header=not args.no_header, min_interactions=args.min_interactions)
 
 
 if __name__ == "__main__":
