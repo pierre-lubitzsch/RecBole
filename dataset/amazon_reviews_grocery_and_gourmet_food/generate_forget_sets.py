@@ -46,7 +46,7 @@ def load_interactions_for_forget_set(dataset_file, sensitive_items, threshold=No
             total_count += 1
             
             # Only keep interactions with sensitive items which are used in training (aka have a rating above threshold)
-            if row['item_id'] in sensitive_items and (threshold is None or row['rating'] >= threshold):
+            if row['item_id'] in sensitive_items and (threshold is None or float(row['rating']) >= threshold):
                 sensitive_interactions[row['user_id']].append(row)
     
     total_sensitive = sum(len(interactions) for interactions in sensitive_interactions.values())
