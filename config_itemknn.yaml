@@ -12,7 +12,7 @@ threshold:
 eval_args:
   group_by: user
   order: TO
-  split: {LS: 'valid_and_test'}
+  split: {RS: [0.8, 0.1, 0.1]}
   mode: full
   metrics: [Recall, NDCG, Hit, MRR]
   topk: [10, 20]
