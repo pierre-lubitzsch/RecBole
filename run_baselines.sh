@@ -22,7 +22,6 @@ for model in "${models[@]}"; do
 
         echo "Starting tmux session '${session_name}' for model: $model"
 
-        # Create tmux session with the model name and run python command
-        tmux new -d -s "${session_name}" "conda activate env && python run_recbole.py --model $model --dataset $dataset --seed $seed --config_files $config_file 2>&1 | tee $log_file"
+        tmux new -d -s "${session_name}" bash -c "conda activate env; python run_recbole.py --model $model --dataset $dataset --seed $seed --config_files $config_file 2>&1 | tee $log_file"    done
     done
 done
