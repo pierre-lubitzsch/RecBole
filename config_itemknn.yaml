@@ -32,7 +32,7 @@ shrink: 0  # Shrinkage parameter for similarity (0-100)
 
 # Runtime
 use_gpu: False  # ItemKNN is memory-based, doesn't use GPU
-gpu_id: 0
+gpu_id: ""
 early_stop: False  # No training needed
 show_progress: False
 epochs: 1  # Only needs 1 epoch to compute similarities

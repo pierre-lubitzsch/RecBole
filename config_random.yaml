@@ -27,8 +27,8 @@ user_inter_num_interval: "[5, inf)"
 item_inter_num_interval: "[5, inf)"
 
 # Runtime
-use_gpu: True
-gpu_id: 0
+use_gpu: False
+gpu_id: ""
 early_stop: False
 show_progress: False
 epochs: 1  # Random doesn't need training
