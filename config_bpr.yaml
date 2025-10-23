@@ -22,6 +22,11 @@ eval_args:
   topk: [10, 20]
   valid_metric: Recall@20
 
+# Top-level parameters (needed because RecBole reads these separately)
+topk: [10, 20]
+valid_metric: Recall@20
+metrics: [Recall, NDCG, Hit, MRR]
+
 user_inter_num_interval: "[5, inf)"
 item_inter_num_interval: "[5, inf)"
 
