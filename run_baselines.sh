@@ -3,14 +3,22 @@
 # Run baseline models for implicit collaborative filtering
 # These models are deterministic/memory-based, so seed doesn't matter
 # We use seed=2 for consistency with other experiments
+#
+# IMPORTANT: Activate the conda environment BEFORE running this script:
+#   conda activate env
+#   ./run_baselines.sh
 
 models=("Random" "Pop" "ItemKNN" "EASE")
 datasets=("amazon_reviews_grocery_and_gourmet_food")
 seed=2
 
+# Get the Python executable from the current environment
+PYTHON_PATH=$(which python)
+
 echo "Running baseline models with seed=${seed}"
 echo "Models: ${models[@]}"
 echo "Dataset: ${datasets[@]}"
+echo "Python: ${PYTHON_PATH}"
 echo ""
 
 for model in "${models[@]}"; do
@@ -22,6 +30,6 @@ for model in "${models[@]}"; do
 
         echo "Starting tmux session '${session_name}' for model: $model"
 
-        tmux new -d -s "${session_name}" bash -c "conda activate env; python run_recbole.py --model $model --dataset $dataset --seed $seed --config_files $config_file 2>&1 | tee $log_file"    done
+        tmux new -d -s "${session_name}" "cd $(pwd) && ${PYTHON_PATH} run_recbole.py --model $model --dataset $dataset --seed $seed --config_files $config_file 2>&1 | tee $log_file"
     done
 done
