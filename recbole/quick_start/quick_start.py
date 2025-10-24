@@ -710,7 +710,7 @@ def unlearn_recbole(
     print("Original Model:")
     print(f"Evaluating model {base_model_path} on data with current mask\n")
     test_result = trainer.evaluate(
-        test_data, load_best_model=True, show_progress=True, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
+        test_data, load_best_model=True, show_progress=False, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
     )
     if spam:
         test_result, probability_data = test_result
