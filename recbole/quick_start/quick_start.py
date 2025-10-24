@@ -548,6 +548,7 @@ def unlearn_recbole(
     
     unlearning_times = []
     total_start_time = time.time()
+    uid_seen = set()
     
     for unlearn_request_idx, (u, forget_items) in enumerate(sorted(pairs_by_user.items())):
         print(f"\nUnlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
@@ -555,6 +556,10 @@ def unlearn_recbole(
 
         # Convert user and item tokens to internal IDs
         u_id = dataset.token2id(uid_field, u)
+        if u_id in uid_seen:
+            print(f"Warning: user {u} (internal ID {u_id}) has already been unlearned before. Skipping.")
+            continue
+        uid_seen.add(u_id)
         forget_items_ids = [dataset.token2id(iid_field, item) for item in forget_items]
 
         unlearned_users_before.append(u_id)

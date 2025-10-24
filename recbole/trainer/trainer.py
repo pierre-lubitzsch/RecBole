@@ -551,6 +551,8 @@ class Trainer(AbstractTrainer):
         all_scores = torch.cat([g.abs().reshape(-1) for g in signed_grads])
         total = all_scores.numel()
         k = max(1, int(total * kookmin_init_rate))
+        print(k)
+        exit(0)
         thresh = all_scores.kthvalue(k).values.item()
 
         reinit_masks = dict()
