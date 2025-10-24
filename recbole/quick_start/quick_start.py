@@ -553,11 +553,15 @@ def unlearn_recbole(
         print(f"\nUnlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
         request_start_time = time.time()
 
-        unlearned_users_before.append(u)
+        # Convert user and item tokens to internal IDs
+        u_id = dataset.token2id(uid_field, u)
+        forget_items_ids = [dataset.token2id(iid_field, item) for item in forget_items]
 
-        rows_by_user[u] = np.where(user_ids == u)[0]
-        all_idx = rows_by_user[u]
-        mask = np.isin(item_ids[all_idx], forget_items)
+        unlearned_users_before.append(u_id)
+
+        rows_by_user[u_id] = np.where(user_ids == u_id)[0]
+        all_idx = rows_by_user[u_id]
+        mask = np.isin(item_ids[all_idx], forget_items_ids)
         removed_mask[all_idx[mask]] = True
 
         saved_checkpoint = unlearn_request_idx in unlearning_checkpoints
