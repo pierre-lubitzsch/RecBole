@@ -1097,6 +1097,7 @@ class Trainer(AbstractTrainer):
         retain_samples_used_for_update=128,
         max_norm=None,
         unlearned_users_before=None,
+        damping=0.01,
     ):
 
         # r"""Train the model in an epoch
@@ -1184,6 +1185,11 @@ class Trainer(AbstractTrainer):
 
         grads = [n + p for n, p in zip(neg_grads, pos_grads)]
 
+        # Check for NaN/Inf in gradient computation
+        if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+            self.logger.warning("[SCIF] NaN or Inf detected in gradient computation before CG solver")
+            return
+
         inv_hvp, _ = self.cg_inv_hvp(
             self.model,
             clean_forget_data,
@@ -1191,6 +1197,7 @@ class Trainer(AbstractTrainer):
             forget_data,
             grads,
             param_list,
+            damping=damping,
         )
 
         tau = 1 / len(retain_train_data.dataset)
@@ -1235,13 +1242,30 @@ class Trainer(AbstractTrainer):
             with torch.backends.cudnn.flags(enabled=False):
                 loss = loss_func(interaction)
                 grad = torch.autograd.grad(loss, param_list, create_graph=True)
+                # Check for NaN/Inf in gradients
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grad):
+                    raise RuntimeError("[HVP] NaN or Inf detected in first-order gradients")
                 dot  = sum((g * v).sum() for g, v in zip(grad, v_list))
+                # Check for NaN/Inf in dot product
+                if torch.isnan(dot) or torch.isinf(dot):
+                    raise RuntimeError("[HVP] NaN or Inf detected in dot product")
                 hv   = torch.autograd.grad(dot, param_list, retain_graph=False)
         else:
             loss = loss_func(interaction)
             grad = torch.autograd.grad(loss, param_list, create_graph=True)
+            # Check for NaN/Inf in gradients
+            if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grad):
+                raise RuntimeError("[HVP] NaN or Inf detected in first-order gradients")
             dot  = sum((g * v).sum() for g, v in zip(grad, v_list))
+            # Check for NaN/Inf in dot product
+            if torch.isnan(dot) or torch.isinf(dot):
+                raise RuntimeError("[HVP] NaN or Inf detected in dot product")
             hv   = torch.autograd.grad(dot, param_list, retain_graph=False)
+
+        # Check for NaN/Inf in Hessian-vector product
+        if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hv):
+            raise RuntimeError("[HVP] NaN or Inf detected in Hessian-vector product output")
+
         return [h.detach() for h in hv]
 
     def _hvp_dataset(
@@ -1318,11 +1342,19 @@ class Trainer(AbstractTrainer):
                 # add lambda I term
                 q = [qi + damping * pi for qi, pi in zip(q, p)]
 
-                if self._dot_list(p, q).item() == 0:
-                    # p and q are orthogonal, we cannot proceed
-                    print(f"[CG]  p and q are orthogonal at iteration {i // bs}, stopping.")
+                pq_dot = self._dot_list(p, q).item()
+                # Use epsilon threshold instead of exact zero comparison for numerical stability
+                if abs(pq_dot) < 1e-10:
+                    # p and q are nearly orthogonal, we cannot proceed
+                    print(f"[CG]  p and q are nearly orthogonal (dot={pq_dot}) at clean_forget iteration {i // bs}, stopping.")
                     break
-                alpha = rs_old / self._dot_list(p, q).item()
+
+                # Check for NaN/Inf in dot product
+                if math.isnan(pq_dot) or math.isinf(pq_dot):
+                    self.logger.warning(f"[CG] NaN or Inf detected in p·q dot product at clean_forget iteration {i // bs}")
+                    break
+
+                alpha = rs_old / pq_dot
 
                 # x_{k+1}  =  x_k + alpha p_k
                 x = self._add_scaled(x, p, alpha)
@@ -1362,11 +1394,19 @@ class Trainer(AbstractTrainer):
                 # add lambda I term
                 q = [qi + damping * pi for qi, pi in zip(q, p)]
 
-                if self._dot_list(p, q).item() == 0:
-                    # p and q are orthogonal, we cannot proceed
-                    print(f"[CG]  p and q are orthogonal at iteration {i // bs}, stopping.")
+                pq_dot = self._dot_list(p, q).item()
+                # Use epsilon threshold instead of exact zero comparison for numerical stability
+                if abs(pq_dot) < 1e-10:
+                    # p and q are nearly orthogonal, we cannot proceed
+                    print(f"[CG]  p and q are nearly orthogonal (dot={pq_dot}) at retain_train iteration {i // bs}, stopping.")
                     break
-                alpha = rs_old / self._dot_list(p, q).item()
+
+                # Check for NaN/Inf in dot product
+                if math.isnan(pq_dot) or math.isinf(pq_dot):
+                    self.logger.warning(f"[CG] NaN or Inf detected in p·q dot product at retain_train iteration {i // bs}")
+                    break
+
+                alpha = rs_old / pq_dot
 
                 # x_{k+1}  =  x_k + alpha p_k
                 x = self._add_scaled(x, p, alpha)
@@ -1407,6 +1447,7 @@ class Trainer(AbstractTrainer):
         kookmin_init_rate=0.01,
         retrain_checkpoint_idx_to_match=None,
         task_type="SBR",
+        damping=0.01,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -1444,6 +1485,7 @@ class Trainer(AbstractTrainer):
                 show_progress=show_progress,
                 max_norm=max_norm,
                 unlearned_users_before=unlearned_users_before,
+                damping=damping,
             )
         elif unlearning_algorithm == "kookmin":
             retain_samples_used_for_update = 32 * len(forget_data.dataset)

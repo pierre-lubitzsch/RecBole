@@ -170,6 +170,12 @@ def main():
         default=0.01,
         help="fraction of params to re-initialize with kookmin unlearning",
     )
+    parser.add_argument(
+        "--damping",
+        type=float,
+        default=0.01,
+        help="damping parameter for conjugate gradient solver in SCIF (lambda in (H + lambda*I)x = v)",
+    )
 
     # Spam/attack configuration
     parser.add_argument(
@@ -234,6 +240,7 @@ def main():
         "retain_samples_used_for_update": args.retain_samples_used_for_update,
         "kookmin_init_rate": args.kookmin_init_rate,
         "model_dir": args.model_dir,
+        "damping": args.damping,
     }
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
@@ -254,6 +261,7 @@ def main():
         base_model_path=base_model_path,
         kookmin_init_rate=args.kookmin_init_rate,
         spam=args.spam,
+        damping=args.damping,
     )
 
 if __name__ == "__main__":

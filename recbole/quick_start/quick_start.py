@@ -332,6 +332,7 @@ def unlearn_recbole(
     base_model_path=None,
     kookmin_init_rate=0.01,
     spam=False,
+    damping=0.01,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -676,6 +677,7 @@ def unlearn_recbole(
             kookmin_init_rate=kookmin_init_rate,
             retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
             task_type=config.task_type,
+            damping=damping,
         )
 
         request_end_time = time.time()
