@@ -1190,7 +1190,7 @@ class Trainer(AbstractTrainer):
             self.logger.warning("[SCIF] NaN or Inf detected in gradient computation before CG solver")
             return
 
-        inv_hvp, _ = self.cg_inv_hvp(
+        inv_hvp, cg_converged = self.cg_inv_hvp(
             self.model,
             clean_forget_data,
             retain_train_data,
@@ -1200,16 +1200,32 @@ class Trainer(AbstractTrainer):
             damping=damping,
         )
 
+        # Check if CG solver returned valid results
+        if any(torch.isnan(h).any() or torch.isinf(h).any() for h in inv_hvp):
+            self.logger.warning(f"[SCIF] CG solver returned NaN or Inf. Skipping parameter update for request {epoch_idx}.")
+            return
+
+        # Check if CG solver converged or produced meaningful results
+        inv_hvp_norm = self.norm_list(inv_hvp)
+        if inv_hvp_norm < 1e-15:
+            self.logger.warning(f"[SCIF] CG solver produced negligible update (norm={inv_hvp_norm}). Skipping parameter update for request {epoch_idx}.")
+            return
+
         tau = 1 / len(retain_train_data.dataset)
         if max_norm is not None:
-            delta_norm = tau * self.norm_list(inv_hvp)
+            delta_norm = tau * inv_hvp_norm
             if delta_norm > max_norm:
                 scale = max_norm / delta_norm
                 inv_hvp = [x * scale for x in inv_hvp]
-        
+
         with torch.no_grad():
             for p, d in zip(param_list, inv_hvp):
                 p -= tau * d
+
+        # Verify model parameters are still valid after update
+        if any(torch.isnan(p).any() or torch.isinf(p).any() for p in param_list):
+            self.logger.error(f"[SCIF] Model parameters became NaN or Inf after update for request {epoch_idx}. This should not happen!")
+            raise RuntimeError("Model parameters corrupted during SCIF update")
 
         print(f"[SCIF]  removed {len(forget_data.dataset)} samples, "
             f"tau={tau},  ||delta theta||={tau * self.norm_list(inv_hvp)}")
@@ -1244,27 +1260,32 @@ class Trainer(AbstractTrainer):
                 grad = torch.autograd.grad(loss, param_list, create_graph=True)
                 # Check for NaN/Inf in gradients
                 if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grad):
-                    raise RuntimeError("[HVP] NaN or Inf detected in first-order gradients")
+                    self.logger.warning("[HVP] NaN or Inf detected in first-order gradients")
+                    return None
                 dot  = sum((g * v).sum() for g, v in zip(grad, v_list))
                 # Check for NaN/Inf in dot product
                 if torch.isnan(dot) or torch.isinf(dot):
-                    raise RuntimeError("[HVP] NaN or Inf detected in dot product")
+                    self.logger.warning(f"[HVP] NaN or Inf detected in dot product (dot={dot})")
+                    return None
                 hv   = torch.autograd.grad(dot, param_list, retain_graph=False)
         else:
             loss = loss_func(interaction)
             grad = torch.autograd.grad(loss, param_list, create_graph=True)
             # Check for NaN/Inf in gradients
             if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grad):
-                raise RuntimeError("[HVP] NaN or Inf detected in first-order gradients")
+                self.logger.warning("[HVP] NaN or Inf detected in first-order gradients")
+                return None
             dot  = sum((g * v).sum() for g, v in zip(grad, v_list))
             # Check for NaN/Inf in dot product
             if torch.isnan(dot) or torch.isinf(dot):
-                raise RuntimeError("[HVP] NaN or Inf detected in dot product")
+                self.logger.warning(f"[HVP] NaN or Inf detected in dot product (dot={dot})")
+                return None
             hv   = torch.autograd.grad(dot, param_list, retain_graph=False)
 
         # Check for NaN/Inf in Hessian-vector product
         if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hv):
-            raise RuntimeError("[HVP] NaN or Inf detected in Hessian-vector product output")
+            self.logger.warning("[HVP] NaN or Inf detected in Hessian-vector product output")
+            return None
 
         return [h.detach() for h in hv]
 
@@ -1281,6 +1302,9 @@ class Trainer(AbstractTrainer):
             model, interaction,
             v_list, param_list,
         )
+        if hv is None:
+            # HVP computation failed, return None to signal error
+            return None
         for a, h in zip(acc, hv):
             a += h
         if average:
@@ -1339,6 +1363,12 @@ class Trainer(AbstractTrainer):
                     p, param_list,
                     average=True,
                 )
+                # Check if HVP computation failed
+                if q is None:
+                    self.logger.warning(f"[CG] HVP computation failed at clean_forget iteration {i // bs}, stopping CG solver")
+                    break_flag = True
+                    break
+
                 # add lambda I term
                 q = [qi + damping * pi for qi, pi in zip(q, p)]
 
@@ -1391,6 +1421,12 @@ class Trainer(AbstractTrainer):
                     p, param_list,
                     average=True,
                 )
+                # Check if HVP computation failed
+                if q is None:
+                    self.logger.warning(f"[CG] HVP computation failed at retain_train iteration {i // bs}, stopping CG solver")
+                    break_flag = True
+                    break
+
                 # add lambda I term
                 q = [qi + damping * pi for qi, pi in zip(q, p)]
 
