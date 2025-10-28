@@ -558,11 +558,15 @@ class Trainer(AbstractTrainer):
             total_in_layer = g_abs.numel()
             k_in_layer = max(1, int(total_in_layer * kookmin_init_rate))
 
-            # Get the kth smallest gradient in the current layer
-            thresh_layer = g_abs.view(-1).kthvalue(k_in_layer).values.item()
+            # Use topk to get exactly k_in_layer smallest gradients (negate for smallest)
+            # topk returns largest values, so we negate to get smallest
+            g_flat = g_abs.view(-1)
+            _, indices = torch.topk(-g_flat, k=k_in_layer, largest=True)
 
-            # Reset parameters with smallest gradients in this layer
-            mask = (g_abs <= thresh_layer)
+            # Create mask: True only for the k_in_layer smallest gradient positions
+            mask = torch.zeros_like(g_abs, dtype=torch.bool)
+            mask.view(-1)[indices] = True
+
             if not mask.any():
                 continue
 
