@@ -890,6 +890,7 @@ def unlearn_recbole(
                 for k in topk_list:
                     users_with_sensitive_in_topk = 0
                     total_sensitive_in_topk = 0
+                    sensitive_counts_per_user = []
 
                     for user_id in unlearned_user_ids:
                         # Get top-k items for this user
@@ -897,17 +898,22 @@ def unlearn_recbole(
 
                         # Check for sensitive items in top-k
                         sensitive_in_topk = [item for item in topk_items if item in sensitive_item_ids]
+                        num_sensitive = len(sensitive_in_topk)
 
-                        if len(sensitive_in_topk) > 0:
+                        sensitive_counts_per_user.append(num_sensitive)
+
+                        if num_sensitive > 0:
                             users_with_sensitive_in_topk += 1
-                            total_sensitive_in_topk += len(sensitive_in_topk)
+                            total_sensitive_in_topk += num_sensitive
 
                     # Compute metrics
                     pct_users_with_sensitive = 100 * users_with_sensitive_in_topk / len(unlearned_user_ids)
                     avg_sensitive_per_user = total_sensitive_in_topk / len(unlearned_user_ids)
+                    min_sensitive_per_user = min(sensitive_counts_per_user)
+                    max_sensitive_per_user = max(sensitive_counts_per_user)
 
                     print(f"  [Top-{k}] Users with sensitive items: {users_with_sensitive_in_topk}/{len(unlearned_user_ids)} ({pct_users_with_sensitive:.2f}%)")
-                    print(f"  [Top-{k}] Average sensitive items per user: {avg_sensitive_per_user:.4f}")
+                    print(f"  [Top-{k}] Sensitive items per user - Avg: {avg_sensitive_per_user:.4f}, Min: {min_sensitive_per_user}, Max: {max_sensitive_per_user}")
                     print(f"  [Top-{k}] Total sensitive items in predictions: {total_sensitive_in_topk}")
 
                     # Add to results
@@ -919,6 +925,8 @@ def unlearn_recbole(
                         "total_unlearned_users": len(unlearned_user_ids),
                         "pct_users_with_sensitive": pct_users_with_sensitive,
                         "avg_sensitive_per_user": avg_sensitive_per_user,
+                        "min_sensitive_per_user": min_sensitive_per_user,
+                        "max_sensitive_per_user": max_sensitive_per_user,
                         "total_sensitive_in_topk": total_sensitive_in_topk,
                         "topk": k,
                     })
