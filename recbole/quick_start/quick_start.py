@@ -546,6 +546,8 @@ def unlearn_recbole(
     unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
     eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
     eval_masks = []
+    # Track which users were unlearned at each checkpoint for sensitive item evaluation
+    unlearned_users_at_checkpoint = {}
     
     unlearning_times = []
     total_start_time = time.time()
@@ -687,6 +689,10 @@ def unlearn_recbole(
         print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
 
         if saved_checkpoint:
+            # Store which users have been unlearned at this checkpoint
+            checkpoint_idx = retrain_checkpoint_idx_to_match
+            unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
+
             retrain_checkpoint_idx_to_match += 1
             config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
 
@@ -812,6 +818,104 @@ def unlearn_recbole(
         with open(pickle_file, 'wb') as f:
             pickle.dump(model_interaction_probabilities, f)
         print(f"Saved model interaction probabilities to {pickle_file}")
+
+    # Sensitive item evaluation for unlearned users
+    if config['sensitive_category'] is not None:
+        print("Sensitive Item Evaluation")
+
+        sensitive_category = config['sensitive_category']
+        sensitive_items_path = os.path.join(config['data_path'], f"sensitive_asins_{sensitive_category}.txt")
+
+        if os.path.exists(sensitive_items_path):
+            with open(sensitive_items_path, 'r') as f:
+                sensitive_asins = set(line.strip() for line in f if line.strip())
+            print(f"Loaded {len(sensitive_asins)} sensitive items from {sensitive_items_path}")
+
+            # Map ASINs to internal item IDs
+            # The dataset has item_id tokens that need to be mapped
+            sensitive_item_ids = set()
+            for asin in sensitive_asins:
+                if asin in dataset.field2id_token['item_id']:
+                    item_id = dataset.field2id_token['item_id'][asin]
+                    sensitive_item_ids.add(item_id)
+
+            print(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs")
+
+            # Evaluate each model (each corresponds to a different checkpoint)
+            for checkpoint_idx, file in enumerate(eval_files):
+                print(f"\nEvaluating sensitive item exposure for model: {file}")
+
+                # Get list of users that were unlearned up to this checkpoint
+                unlearned_user_ids = unlearned_users_at_checkpoint.get(checkpoint_idx, [])
+                if not unlearned_user_ids:
+                    print(f"  Warning: No unlearned users found for checkpoint {checkpoint_idx}")
+                    continue
+
+                print(f"  Evaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {checkpoint_idx}")
+
+                # Load model
+                checkpoint = torch.load(file, map_location=trainer.device)
+                trainer.model.load_state_dict(checkpoint['state_dict'])
+                trainer.model.eval()
+
+                # Get list of k values to evaluate
+                topk_list = config['topk'] if isinstance(config['topk'], list) else [config['topk']]
+                max_k = max(topk_list)
+
+                # Get top-max_k predictions once for all users
+                all_user_topk_items = {}
+                with torch.no_grad():
+                    for user_id in unlearned_user_ids:
+                        # Create interaction for this user
+                        interaction = {
+                            'user_id': torch.tensor([user_id], device=trainer.device)
+                        }
+
+                        # Get predictions
+                        scores = trainer.model.full_sort_predict(interaction)
+
+                        # Get top-max_k items (we'll slice this for different k values)
+                        _, topk_items = torch.topk(scores, k=max_k, dim=-1)
+                        all_user_topk_items[user_id] = topk_items.cpu().numpy()[0]
+
+                # Evaluate for each k value
+                for k in topk_list:
+                    users_with_sensitive_in_topk = 0
+                    total_sensitive_in_topk = 0
+
+                    for user_id in unlearned_user_ids:
+                        # Get top-k items for this user
+                        topk_items = all_user_topk_items[user_id][:k]
+
+                        # Check for sensitive items in top-k
+                        sensitive_in_topk = [item for item in topk_items if item in sensitive_item_ids]
+
+                        if len(sensitive_in_topk) > 0:
+                            users_with_sensitive_in_topk += 1
+                            total_sensitive_in_topk += len(sensitive_in_topk)
+
+                    # Compute metrics
+                    pct_users_with_sensitive = 100 * users_with_sensitive_in_topk / len(unlearned_user_ids)
+                    avg_sensitive_per_user = total_sensitive_in_topk / len(unlearned_user_ids)
+
+                    print(f"  [Top-{k}] Users with sensitive items: {users_with_sensitive_in_topk}/{len(unlearned_user_ids)} ({pct_users_with_sensitive:.2f}%)")
+                    print(f"  [Top-{k}] Average sensitive items per user: {avg_sensitive_per_user:.4f}")
+                    print(f"  [Top-{k}] Total sensitive items in predictions: {total_sensitive_in_topk}")
+
+                    # Add to results
+                    results.append({
+                        "model_file": file,
+                        "sensitive_category": sensitive_category,
+                        "checkpoint_idx": checkpoint_idx,
+                        "users_with_sensitive_in_topk": users_with_sensitive_in_topk,
+                        "total_unlearned_users": len(unlearned_user_ids),
+                        "pct_users_with_sensitive": pct_users_with_sensitive,
+                        "avg_sensitive_per_user": avg_sensitive_per_user,
+                        "total_sensitive_in_topk": total_sensitive_in_topk,
+                        "topk": k,
+                    })
+        else:
+            print(f"Warning: Sensitive items file not found at {sensitive_items_path}")
 
     return results
 
