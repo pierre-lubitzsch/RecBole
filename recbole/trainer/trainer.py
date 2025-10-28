@@ -547,17 +547,26 @@ class Trainer(AbstractTrainer):
 
         signed_grads = [gr - gf for gr, gf in zip(grads_retain, grads_forget)]
 
-        all_scores = torch.cat([g.abs().reshape(-1) for g in signed_grads])
-        total = all_scores.numel()
-        k = max(1, int(total * kookmin_init_rate))
-        thresh = all_scores.kthvalue(k).values.item()
-
+        # Apply per-layer threshold like the original Kookmin paper
+        # Instead of global threshold across all parameters
         reinit_masks = dict()
+        total_params_reset = 0
 
         for p, g in zip(param_list, signed_grads):
-            mask = g.abs() <= thresh
+            # Compute threshold for this layer/parameter tensor only
+            g_abs = g.abs()
+            total_in_layer = g_abs.numel()
+            k_in_layer = max(1, int(total_in_layer * kookmin_init_rate))
+
+            # Get the kth smallest gradient in the current layer
+            thresh_layer = g_abs.view(-1).kthvalue(k_in_layer).values.item()
+
+            # Reset parameters with smallest gradients in this layer
+            mask = (g_abs <= thresh_layer)
             if not mask.any():
                 continue
+
+            total_params_reset += mask.sum().item()
 
             new_p = torch.empty_like(p.data, device=self.device)
             if p.dim() == 4:            # e.g. Conv2d weight
@@ -573,7 +582,11 @@ class Trainer(AbstractTrainer):
 
             # store the mask to use later
             reinit_masks[p] = mask
-        
+
+        # Log statistics about parameter reinitialization
+        total_params = sum(p.numel() for p in param_list)
+        print(f"[Kookmin] Reset {total_params_reset}/{total_params} parameters ({100*total_params_reset/total_params:.4f}%) across {len(reinit_masks)} layers")
+
         self._reset_adam_state(self.optimizer, list(reinit_masks.keys()))
 
         self.model.zero_grad()
