@@ -589,7 +589,7 @@ class Trainer(AbstractTrainer):
 
         # Log statistics about parameter reinitialization
         total_params = sum(p.numel() for p in param_list)
-        print(f"[Kookmin] Reset {total_params_reset}/{total_params} parameters ({100*total_params_reset/total_params:.4f}%) across {len(reinit_masks)} layers")
+        print(f"[Kookmin] Reset {total_params_reset}/{total_params} parameters ({100*total_params_reset/total_params}%) across {len(reinit_masks)} layers")
 
         self._reset_adam_state(self.optimizer, list(reinit_masks.keys()))
 
