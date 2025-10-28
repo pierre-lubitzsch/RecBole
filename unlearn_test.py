@@ -80,8 +80,9 @@ def main():
     parser.add_argument(
         "--topk",
         type=int,
-        default=10,
-        help="Top-k parameter"
+        nargs='+',
+        default=[10, 20],
+        help="Top-k parameters (space-separated list, e.g., --topk 10 20)"
     )
     parser.add_argument(
         "--training",

@@ -765,45 +765,47 @@ def unlearn_recbole(
         print("\n")
         sys.stdout.flush()
 
-    print("Creating unpoisoned dataset for all models...")
-    unpoisoned_eval_df = orig_inter_df.loc[~eval_masks[-1]]
-    unpoisoned_eval_dataset = dataset.copy(unpoisoned_eval_df)
-    unpoisoned_train_data, unpoisoned_val_data, unpoisoned_test_data = data_preparation(config, unpoisoned_eval_dataset, spam=spam)
+    # Only evaluate on unpoisoned data in spam scenario
+    if spam:
+        print("Creating unpoisoned dataset for all models...")
+        unpoisoned_eval_df = orig_inter_df.loc[~eval_masks[-1]]
+        unpoisoned_eval_dataset = dataset.copy(unpoisoned_eval_df)
+        unpoisoned_train_data, unpoisoned_val_data, unpoisoned_test_data = data_preparation(config, unpoisoned_eval_dataset, spam=spam)
 
-    del unpoisoned_train_data, unpoisoned_val_data  # we only need test data for evaluation
-    gc.collect()
+        del unpoisoned_train_data, unpoisoned_val_data  # we only need test data for evaluation
+        gc.collect()
 
-    # Second loop: evaluate all models on the same unpoisoned data
-    for file in eval_files:
-        print(f"Evaluating model {file} on unpoisoned data\n")
-        
-        unpoisoned_key = f"{file}_unpoisoned"
+        # Second loop: evaluate all models on the same unpoisoned data
+        for file in eval_files:
+            print(f"Evaluating model {file} on unpoisoned data\n")
 
+            unpoisoned_key = f"{file}_unpoisoned"
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            unpoisoned_test_result = trainer.evaluate(
+                unpoisoned_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            )
+            if spam:
+                unpoisoned_test_result, probability_data = unpoisoned_test_result
+                model_interaction_probabilities[unpoisoned_key] = probability_data
+
+            unpoisoned_result = {
+                "test_result": unpoisoned_test_result,
+                "model_file": file,
+                "mask_type": "unpoisoned",
+            }
+            results.append(unpoisoned_result)
+
+            print(f"Results for model {file} on unpoisoned data: {unpoisoned_test_result}")
+            print("\n")
+            sys.stdout.flush()
+
+        del unpoisoned_eval_df, unpoisoned_eval_dataset, unpoisoned_test_data
+        gc.collect()
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        unpoisoned_test_result = trainer.evaluate(
-            unpoisoned_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
-        )
-        if spam:
-            unpoisoned_test_result, probability_data = unpoisoned_test_result
-            model_interaction_probabilities[unpoisoned_key] = probability_data
-
-        unpoisoned_result = {
-            "test_result": unpoisoned_test_result,
-            "model_file": file,
-            "mask_type": "unpoisoned",
-        }
-        results.append(unpoisoned_result)
-
-        print(f"Results for model {file} on unpoisoned data: {unpoisoned_test_result}")
-        print("\n")
-        sys.stdout.flush()
-
-    del unpoisoned_eval_df, unpoisoned_eval_dataset, unpoisoned_test_data
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()    
+            torch.cuda.empty_cache()    
 
     if spam:
         pickle_file = os.path.join(trainer.saved_model_file[:-len(".pth")], "model_interaction_probabilities.pkl")
