@@ -834,12 +834,16 @@ def unlearn_recbole(
             # Map ASINs to internal item IDs
             # The dataset has item_id tokens that need to be mapped
             sensitive_item_ids = set()
+            iid_field = dataset.iid_field
             for asin in sensitive_asins:
-                if asin in dataset.field2id_token['item_id']:
-                    item_id = dataset.field2id_token['item_id'][asin]
+                try:
+                    item_id = dataset.token2id(iid_field, asin)
                     sensitive_item_ids.add(item_id)
+                except ValueError:
+                    # ASIN not in dataset (e.g., filtered out or not in this subset)
+                    pass
 
-            print(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs")
+            print(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs (out of {len(sensitive_asins)} ASINs)")
 
             # Evaluate each model (each corresponds to a different checkpoint)
             for checkpoint_idx, file in enumerate(eval_files):
