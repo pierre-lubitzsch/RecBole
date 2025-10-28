@@ -880,7 +880,11 @@ def unlearn_recbole(
 
                         # Get top-max_k items (we'll slice this for different k values)
                         _, topk_items = torch.topk(scores, k=max_k, dim=-1)
-                        all_user_topk_items[user_id] = topk_items.cpu().numpy()[0]
+                        # Handle both 1D and 2D tensor outputs
+                        topk_items_np = topk_items.cpu().numpy()
+                        if topk_items_np.ndim > 1:
+                            topk_items_np = topk_items_np[0]
+                        all_user_topk_items[user_id] = topk_items_np
 
                 # Evaluate for each k value
                 for k in topk_list:
