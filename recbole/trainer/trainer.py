@@ -632,6 +632,12 @@ class Trainer(AbstractTrainer):
     ):
         self.optimizer.zero_grad()
 
+        # Clear cached embeddings to ensure gradients are computed
+        if hasattr(model, 'restore_user_e'):
+            model.restore_user_e = None
+        if hasattr(model, 'restore_item_e'):
+            model.restore_item_e = None
+
         if task_type == "CF":
             item_count = model.item_embedding.weight.shape[0]
             raw_scores = model.full_sort_predict(interaction).view(-1, item_count)
