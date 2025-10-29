@@ -664,7 +664,7 @@ class Trainer(AbstractTrainer):
             return seq_output
         elif hasattr(model, "user_embedding"): # CF
             user = interaction[model.USER_ID]
-            user_e = model.get_user_embedding(user)
+            user_e = model.user_embedding(user)
             return user_e
         else:
             raise ValueError(f"Model {model} is not supported, specify here which layer to take for contrastive learning.")
