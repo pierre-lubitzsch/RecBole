@@ -207,7 +207,7 @@ def run_recbole(
                 config["data_path"],
                 f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
             )
-        elif config.get('sensitive_category') is not None:
+        elif "sensitive_category" in config and config['sensitive_category'] is not None:
             # Handle sensitive category unlearning
             sensitive_category = config['sensitive_category']
             unlearning_samples_path = os.path.join(
@@ -332,7 +332,7 @@ def run_recbole(
     }
 
     # Sensitive item evaluation
-    if config.get('sensitive_category') is not None:
+    if "sensitive_category" in config and config['sensitive_category'] is not None:
         if retrain_flag:
             print("\nSensitive Item Evaluation for Retrained Model")
         else:
