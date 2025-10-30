@@ -197,7 +197,13 @@ def main():
     forget_set = sample_forget_set(sensitive_interactions, target_size, args.seed)
     
     # Write outputs
-    category = args.sensitive_items[:-len('.txt')].split("_")[-1]
+    # Extract category from filename pattern "sensitive_asins_{category}.txt"
+    base_filename = args.sensitive_items[:-len('.txt')]  # Remove .txt
+    if base_filename.startswith('sensitive_asins_'):
+        category = base_filename[len('sensitive_asins_'):]
+    else:
+        # Fallback for backwards compatibility
+        category = base_filename.split("_")[-1]
     forget_file = f"{args.dataset[:-len('.inter')]}_unlearn_pairs_sensitive_category_{category}_seed_{args.seed}_unlearning_fraction_{args.forget_ratio}.inter"
     
     write_dataset(forget_set, forget_file)

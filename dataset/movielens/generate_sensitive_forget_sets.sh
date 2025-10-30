@@ -23,7 +23,7 @@ for category in "${categories[@]}"; do
     echo "  Processing category: ${category}"
     python identify_sensitive_movies.py \
         --genres ${categories_to_genres[$category]} \
-        --output "sensitive_movies_${category}.txt"
+        --output "sensitive_asins_${category}.txt"
 done
 
 # Step 2: Copy generate_forget_sets.py if not present
@@ -36,7 +36,7 @@ fi
 echo ""
 echo "Step 2: Generating forget sets..."
 for category in "${categories[@]}"; do
-    sensitive_file="sensitive_movies_${category}.txt"
+    sensitive_file="sensitive_asins_${category}.txt"
 
     # Check if sensitive movies file exists and has content
     if [ ! -f "$sensitive_file" ]; then

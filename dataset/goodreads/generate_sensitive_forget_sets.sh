@@ -39,12 +39,12 @@ for category in "${categories[@]}"; do
         python identify_sensitive_books.py \
             --use-genres \
             --genres ${categories_to_genres[$category]} \
-            --output "sensitive_books_${category}.txt"
+            --output "sensitive_asins_${category}.txt"
     else
         # Keyword-based search (default)
         python identify_sensitive_books.py \
             --keywords ${categories_to_keywords[$category]} \
-            --output "sensitive_books_${category}.txt"
+            --output "sensitive_asins_${category}.txt"
     fi
 done
 
@@ -58,7 +58,7 @@ fi
 echo ""
 echo "Step 2: Generating forget sets..."
 for category in "${categories[@]}"; do
-    sensitive_file="sensitive_books_${category}.txt"
+    sensitive_file="sensitive_asins_${category}.txt"
 
     # Check if sensitive books file exists and has content
     if [ ! -f "$sensitive_file" ]; then
