@@ -71,7 +71,7 @@ def search_books_by_keywords(
     print(f"Processing {books_file}...")
 
     count = 0
-    with open(books_file, 'r', encoding='utf-8') as f:
+    with open(books_file, 'r', encoding='utf-8', errors='ignore') as f:
         for line_num, line in enumerate(f, 1):
             try:
                 data = json.loads(line.strip())
