@@ -65,8 +65,7 @@ if __name__ == "__main__":
         "--unlearning_sample_selection_method",
         type=str,
         default=None,
-        choices=["random", "popular", "unpopular"],
-        help="how should the forget set be chosen (what type of interactions appear there)"
+        help="how should the forget set be chosen (what type of interactions appear there). example: sensitive_category_alcohol"
     )
     parser.add_argument(
         "--retrain_checkpoint_idx_to_match",

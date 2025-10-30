@@ -262,7 +262,7 @@ def run_recbole(
             # Mark the forget items (interactions to remove) as True
             removed_mask[all_idx[mask]] = True
 
-        # Keep only interactions that are NOT in the forget set (T \ X)
+        # Keep only interactions that are in the retain set
         dataset = dataset.copy(dataset.inter_feat[~removed_mask])
 
         print("retain dataset")
