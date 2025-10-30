@@ -119,6 +119,12 @@ if __name__ == "__main__":
         default=8,
         help="number of reference models for RMIA, default is 8",
     )
+    parser.add_argument(
+        "--sensitive_category",
+        type=str,
+        default=None,
+        help="sensitive category to evaluate (e.g., 'alcohol', 'meat')",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -144,6 +150,7 @@ if __name__ == "__main__":
         "rmia_out_model_flag": args.rmia_out_model_flag,
         "rmia_out_model_partition_idx": args.rmia_out_model_partition_idx,
         "rmia_out_model_k": args.rmia_out_model_k,
+        "sensitive_category": args.sensitive_category,
     }
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
@@ -163,4 +170,5 @@ if __name__ == "__main__":
         retrain_checkpoint_idx_to_match=args.retrain_checkpoint_idx_to_match,
         config_dict=config_dict,
         spam=args.spam,
+        sensitive_category=args.sensitive_category,
     )

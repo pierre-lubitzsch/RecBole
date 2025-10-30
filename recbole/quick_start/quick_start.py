@@ -62,6 +62,7 @@ def run(
     unlearning_sample_selection_method=None,
     retrain_checkpoint_idx_to_match=None,
     spam=False,
+    sensitive_category=None,
 ):
     if nproc == 1 and world_size <= 0:
         res = run_recbole(
@@ -75,6 +76,7 @@ def run(
             unlearning_sample_selection_method=unlearning_sample_selection_method,
             retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
             spam=spam,
+            sensitive_category=sensitive_category,
         )
     else:
         if world_size == -1:
@@ -162,6 +164,7 @@ def run_recbole(
     unlearning_sample_selection_method=None,
     retrain_checkpoint_idx_to_match=None,
     spam=False,
+    sensitive_category=None,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
