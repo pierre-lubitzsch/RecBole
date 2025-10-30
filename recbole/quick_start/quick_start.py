@@ -181,6 +181,12 @@ def run_recbole(
     total_start_time = time.time()
 
     # configurations initialization
+    # Set default topk to [10, 20] if not specified
+    if config_dict is None:
+        config_dict = {}
+    if 'topk' not in config_dict:
+        config_dict['topk'] = [10, 20]
+
     config = Config(
         model=model,
         dataset=dataset,
