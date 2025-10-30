@@ -398,9 +398,11 @@ def run_recbole(
                 users_unlearned = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
 
                 # Get the actual user IDs that were unlearned
+                # pairs_by_user.keys() contains tokens from CSV (ints or strings depending on dataset)
+                # Convert tokens to strings then to internal IDs
                 uid_field = dataset.uid_field
                 sorted_users = sorted(pairs_by_user.keys())[:users_unlearned + 1]
-                unlearned_user_ids = [dataset.token2id(uid_field, u) for u in sorted_users]
+                unlearned_user_ids = [dataset.token2id(uid_field, str(u)) for u in sorted_users]
 
                 print(f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {retrain_checkpoint_idx_to_match}")
             else:
