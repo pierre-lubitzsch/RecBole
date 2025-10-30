@@ -125,6 +125,12 @@ if __name__ == "__main__":
         default=None,
         help="sensitive category to evaluate (e.g., 'alcohol', 'meat')",
     )
+    parser.add_argument(
+        "--task_type",
+        type=str,
+        default=None,
+        help="task type for the model (e.g., 'CF' for collaborative filtering)",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -152,6 +158,8 @@ if __name__ == "__main__":
         "rmia_out_model_k": args.rmia_out_model_k,
         "sensitive_category": args.sensitive_category,
     }
+    if args.task_type is not None:
+        config_dict["task_type"] = args.task_type
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
 
