@@ -301,13 +301,13 @@ def run_recbole(
         train_data,
         valid_data,
         saved=saved,
-        show_progress=config["show_progress"],
+        show_progress=False,
         retrain_flag=retrain_flag,
     )
 
     # model evaluation
     test_result = trainer.evaluate(
-        test_data, load_best_model=saved, show_progress=config["show_progress"]
+        test_data, load_best_model=saved, show_progress=False,
     )
 
     environment_tb = get_environment(config)
