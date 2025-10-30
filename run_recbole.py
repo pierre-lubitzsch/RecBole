@@ -141,10 +141,16 @@ if __name__ == "__main__":
         args.config_files.strip().split(" ") if args.config_files else None
     )
 
+    # If sensitive_category is set and unlearning_sample_selection_method is not,
+    # automatically set it to "sensitive_category_{category}"
+    unlearning_sample_selection_method = args.unlearning_sample_selection_method
+    if args.sensitive_category is not None and unlearning_sample_selection_method is None:
+        unlearning_sample_selection_method = f"sensitive_category_{args.sensitive_category}"
+
     config_dict = {
         "dataset": args.dataset,
         "unlearning_fraction": args.unlearning_fraction,
-        "unlearning_sample_selection_method": args.unlearning_sample_selection_method,
+        "unlearning_sample_selection_method": unlearning_sample_selection_method,
         "model": args.model,
         "retrain_checkpoint_idx_to_match": args.retrain_checkpoint_idx_to_match,
         "spam": args.spam,
@@ -174,7 +180,7 @@ if __name__ == "__main__":
         group_offset=args.group_offset,
         retrain_flag=(args.retrain_checkpoint_idx_to_match is not None),
         unlearning_fraction=args.unlearning_fraction,
-        unlearning_sample_selection_method=args.unlearning_sample_selection_method,
+        unlearning_sample_selection_method=unlearning_sample_selection_method,
         retrain_checkpoint_idx_to_match=args.retrain_checkpoint_idx_to_match,
         config_dict=config_dict,
         spam=args.spam,
