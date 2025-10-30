@@ -6,10 +6,9 @@ rating_threshold=3.5
 
 # Define sensitive movie categories and their genre/tag keywords
 # You can customize these categories and keywords
-declare -a categories=("horror" "romance")
+declare -a categories=("violence")
 declare -A categories_to_genres=(
-    ["horror"]="Horror Thriller"
-    ["romance"]="Romance"
+    ["violence"]="Horror Thriller War Crime"
 )
 
 # Random seeds for reproducibility
