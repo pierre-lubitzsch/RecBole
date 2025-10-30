@@ -8,7 +8,7 @@ rating_threshold=3.0
 # You can customize these categories and keywords
 declare -a categories=("mental_health")
 declare -A categories_to_keywords=(
-    ["mental_health"]="suicide suicidal depression depressed anxiety anxious ptsd trauma traumatic abuse abused violence violent rape sexual assault molest addiction alcoholism drug psychiatric psychological therapy counseling bipolar schizophrenia psychosis grief bereavement self harm cutting disorder anorexia bulimia"
+    ["mental_health"]="suicide suicidal depression depressed anxiety anxious ptsd trauma traumatic abuse abused violence violent rape sexual assault molest addiction alcoholism drug psychiatric psychological therapy counseling bipolar schizophrenia psychosis grief bereavement harm cutting disorder anorexia bulimia"
 )
 
 # Alternative: Use genre-based categories (commented out by default)

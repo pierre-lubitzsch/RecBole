@@ -124,8 +124,6 @@ def search_books_by_keywords(
             except Exception:
                 continue
 
-            if line_num % 10000 == 0:
-                print(f"  Processed {line_num:,} books, found {count} matching books so far...")
 
     print(f"\nTotal unique sensitive books found: {len(sensitive_books)}")
 
