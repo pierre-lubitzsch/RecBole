@@ -259,8 +259,10 @@ def run_recbole(
         for unlearn_request_idx, (u, forget_items) in enumerate(pairs_by_user_unlearned):
             all_idx = np.where(user_ids == u)[0]
             mask = np.isin(item_ids[all_idx], forget_items)
-            removed_mask[all_idx[~mask]] = True
+            # Mark the forget items (interactions to remove) as True
+            removed_mask[all_idx[mask]] = True
 
+        # Keep only interactions that are NOT in the forget set (T \ X)
         dataset = dataset.copy(dataset.inter_feat[~removed_mask])
 
         print("retain dataset")
