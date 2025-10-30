@@ -204,6 +204,15 @@ def run_recbole(
                 config["data_path"],
                 f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
             )
+        elif config.get('sensitive_category') is not None:
+            # Handle sensitive category unlearning
+            sensitive_category = config['sensitive_category']
+            unlearning_samples_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_unlearn_pairs_sensitive_category_{sensitive_category}"
+                f"_seed_{config['unlearn_sample_selection_seed']}"
+                f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
+            )
         else:
             unlearning_samples_path = os.path.join(
                 config["data_path"],
@@ -212,12 +221,21 @@ def run_recbole(
                 f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
             )
 
-        unlearning_samples = pd.read_csv(
-            unlearning_samples_path,
-            sep="\t",
-            names=["user_id", "item_id", "timestamp"],
-            header=0,
-        )
+        # Load unlearning samples based on task type
+        if config.task_type != "CF":
+            unlearning_samples = pd.read_csv(
+                unlearning_samples_path,
+                sep="\t",
+                names=["user_id", "item_id", "timestamp"],
+                header=0,
+            )
+        else:
+            unlearning_samples = pd.read_csv(
+                unlearning_samples_path,
+                sep="\t",
+                names=["user_id", "item_id", "rating", "timestamp"],
+                header=0,
+            )
 
         pairs_by_user = (
             unlearning_samples.groupby("user_id")["item_id"]
@@ -309,6 +327,159 @@ def run_recbole(
         "best_valid_result": best_valid_result,
         "test_result": test_result,
     }
+
+    # Sensitive item evaluation
+    if config.get('sensitive_category') is not None:
+        if retrain_flag:
+            print("\nSensitive Item Evaluation for Retrained Model")
+        else:
+            print("\nSensitive Item Evaluation for Original Model")
+
+        sensitive_category = config['sensitive_category']
+        sensitive_items_path = os.path.join(config['data_path'], f"sensitive_asins_{sensitive_category}.txt")
+
+        if os.path.exists(sensitive_items_path):
+            with open(sensitive_items_path, 'r') as f:
+                sensitive_asins = set(line.strip() for line in f if line.strip())
+            print(f"Loaded {len(sensitive_asins)} sensitive items from {sensitive_items_path}")
+
+            # Map ASINs to internal item IDs
+            sensitive_item_ids = set()
+            iid_field = dataset.iid_field
+            for asin in sensitive_asins:
+                try:
+                    item_id = dataset.token2id(iid_field, asin)
+                    sensitive_item_ids.add(item_id)
+                except ValueError:
+                    # ASIN not in dataset (e.g., filtered out or not in this subset)
+                    pass
+
+            print(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs (out of {len(sensitive_asins)} ASINs)")
+
+            # Determine which users to evaluate
+            if retrain_flag:
+                # For retrained models, evaluate the users that were supposed to be unlearned
+                # Load unlearning samples to determine which users were unlearned
+                unlearning_samples_path = os.path.join(
+                    config["data_path"],
+                    f"{config['dataset']}_unlearn_pairs_sensitive_category_{sensitive_category}"
+                    f"_seed_{config['unlearn_sample_selection_seed']}"
+                    f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
+                )
+
+                if config.task_type != "CF":
+                    unlearning_samples_for_eval = pd.read_csv(
+                        unlearning_samples_path,
+                        sep="\t",
+                        names=["user_id", "item_id", "timestamp"],
+                        header=0,
+                    )
+                else:
+                    unlearning_samples_for_eval = pd.read_csv(
+                        unlearning_samples_path,
+                        sep="\t",
+                        names=["user_id", "item_id", "rating", "timestamp"],
+                        header=0,
+                    )
+
+                pairs_by_user = (
+                    unlearning_samples_for_eval.groupby("user_id")["item_id"]
+                    .agg(list)
+                    .to_dict()
+                )
+
+                # Calculate how many users were unlearned at this checkpoint
+                unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
+                users_unlearned = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
+
+                # Get the actual user IDs that were unlearned
+                uid_field = dataset.uid_field
+                sorted_users = sorted(pairs_by_user.keys())[:users_unlearned + 1]
+                unlearned_user_ids = [dataset.token2id(uid_field, u) for u in sorted_users]
+
+                print(f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {retrain_checkpoint_idx_to_match}")
+            else:
+                # For original models, evaluate all users
+                uid_field = dataset.uid_field
+                user_ids = dataset.inter_feat[uid_field].to_numpy()
+                unlearned_user_ids = np.unique(user_ids).tolist()
+
+                print(f"\nEvaluating all {len(unlearned_user_ids)} users in the dataset")
+
+            # Get list of k values to evaluate
+            topk_list = config['topk'] if isinstance(config['topk'], list) else [config['topk']]
+            max_k = max(topk_list)
+
+            # Get top-max_k predictions once for all users
+            all_user_topk_items = {}
+            trainer.model.eval()
+            with torch.no_grad():
+                for user_id in unlearned_user_ids:
+                    # Create interaction for this user
+                    interaction = {
+                        'user_id': torch.tensor([user_id], device=trainer.device)
+                    }
+
+                    # Get predictions
+                    scores = trainer.model.full_sort_predict(interaction)
+
+                    # Get top-max_k items (we'll slice this for different k values)
+                    _, topk_items = torch.topk(scores, k=max_k, dim=-1)
+                    # Handle both 1D and 2D tensor outputs
+                    topk_items_np = topk_items.cpu().numpy()
+                    if topk_items_np.ndim > 1:
+                        topk_items_np = topk_items_np[0]
+                    all_user_topk_items[user_id] = topk_items_np
+
+            # Evaluate for each k value
+            sensitive_results = []
+            for k in topk_list:
+                users_with_sensitive_in_topk = 0
+                total_sensitive_in_topk = 0
+                sensitive_counts_per_user = []
+
+                for user_id in unlearned_user_ids:
+                    # Get top-k items for this user
+                    topk_items = all_user_topk_items[user_id][:k]
+
+                    # Check for sensitive items in top-k
+                    sensitive_in_topk = [item for item in topk_items if item in sensitive_item_ids]
+                    num_sensitive = len(sensitive_in_topk)
+
+                    sensitive_counts_per_user.append(num_sensitive)
+
+                    if num_sensitive > 0:
+                        users_with_sensitive_in_topk += 1
+                        total_sensitive_in_topk += num_sensitive
+
+                # Compute metrics
+                pct_users_with_sensitive = 100 * users_with_sensitive_in_topk / len(unlearned_user_ids)
+                avg_sensitive_per_user = total_sensitive_in_topk / len(unlearned_user_ids)
+                min_sensitive_per_user = min(sensitive_counts_per_user)
+                max_sensitive_per_user = max(sensitive_counts_per_user)
+
+                print(f"\n[Top-{k}] Users with sensitive items: {users_with_sensitive_in_topk}/{len(unlearned_user_ids)} ({pct_users_with_sensitive:.2f}%)")
+                print(f"[Top-{k}] Sensitive items per user - Avg: {avg_sensitive_per_user:.4f}, Min: {min_sensitive_per_user}, Max: {max_sensitive_per_user}")
+                print(f"[Top-{k}] Total sensitive items in predictions: {total_sensitive_in_topk}")
+
+                sensitive_results.append({
+                    "sensitive_category": sensitive_category,
+                    "checkpoint_idx": retrain_checkpoint_idx_to_match if retrain_flag else None,
+                    "is_retrained": retrain_flag,
+                    "users_with_sensitive_in_topk": users_with_sensitive_in_topk,
+                    "total_unlearned_users": len(unlearned_user_ids),
+                    "pct_users_with_sensitive": pct_users_with_sensitive,
+                    "avg_sensitive_per_user": avg_sensitive_per_user,
+                    "min_sensitive_per_user": min_sensitive_per_user,
+                    "max_sensitive_per_user": max_sensitive_per_user,
+                    "total_sensitive_in_topk": total_sensitive_in_topk,
+                    "topk": k,
+                })
+
+            result["sensitive_item_evaluation"] = sensitive_results
+
+        else:
+            print(f"Warning: Sensitive items file not found at {sensitive_items_path}")
 
     if not config["single_spec"]:
         dist.destroy_process_group()
