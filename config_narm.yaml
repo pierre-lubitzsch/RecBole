@@ -3,13 +3,12 @@ show_progress: False
 train_neg_sample_args: ~
 epochs: 30
 
-# rsc15 dataset
 USER_ID_FIELD: user_id
 ITEM_ID_FIELD: item_id
 TIME_FIELD: timestamp
+SESSION_ID_FIELD: session_id
 load_col:
-    inter: [user_id, item_id, timestamp]
-
+    inter: [user_id, session_id, item_id, timestamp]
 
 eval_args:
     group_by: user
@@ -17,6 +16,6 @@ eval_args:
     split: {RS: [0.8, 0.1, 0.1]}
     mode: full
 
-dataset: rsc15
+min_user_inter_num: 3
 
 hidden_size: 100
