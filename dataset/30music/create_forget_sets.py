@@ -198,9 +198,10 @@ def main():
     sensitive_tracks = identify_sensitive_tracks(tracks_file, SENSITIVE_CATEGORIES)
 
     # Save sensitive track lists
+    # Use 'sensitive_asins' naming for consistency with other datasets
     print("\nSaving sensitive track IDs...")
     for cat_name, track_set in sensitive_tracks.items():
-        output_file = output_dir / f"sensitive_tracks_{cat_name}.txt"
+        output_file = output_dir / f"sensitive_asins_{cat_name}.txt"
         with open(output_file, 'w') as f:
             for track_id in sorted(track_set, key=lambda x: int(x)):
                 f.write(f"{track_id}\n")
