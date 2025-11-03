@@ -18,6 +18,7 @@ import sys
 import yaml
 from logging import getLogger
 from typing import Literal
+import torch
 
 from recbole.evaluator import metric_types, smaller_metrics
 from recbole.utils import (
@@ -481,8 +482,9 @@ class Config(object):
         else:
             self.final_config_dict["gpu_id"] = str(self.final_config_dict["gpu_id"])
         gpu_id = self.final_config_dict["gpu_id"]
-        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
-        import torch
+        # this messes up cluster configurations
+        # set CUDA_VISIBLE_DEVICES manually when running locally on different gpus
+        # os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
 
         if "local_rank" not in self.final_config_dict:
             self.final_config_dict["single_spec"] = True
