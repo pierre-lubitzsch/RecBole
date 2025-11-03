@@ -971,8 +971,30 @@ class Trainer(AbstractTrainer):
             train_data.get_model(self.model)
         valid_step = 0
 
+        # Time budget tracking
+        max_training_hours = self.config["max_training_hours"] if "max_training_hours" in self.config else None
+        training_start_time_budget = time() if max_training_hours is not None else None
+        max_training_seconds = max_training_hours * 3600 if max_training_hours is not None else None
+        last_epoch_duration = None
+        time_budget_exceeded = False
+
         for epoch_idx in range(self.start_epoch, self.epochs):
+            # Check time budget before starting a new epoch
+            if max_training_hours is not None and last_epoch_duration is not None:
+                elapsed_time = time() - training_start_time_budget
+                projected_time_after_epoch = elapsed_time + last_epoch_duration
+                if projected_time_after_epoch > max_training_seconds:
+                    time_budget_exceeded = True
+                    self.logger.info(
+                        set_color("Time budget exceeded", "yellow") +
+                        f": Elapsed time: {elapsed_time/3600:.2f}h, " +
+                        f"Projected time after next epoch: {projected_time_after_epoch/3600:.2f}h, " +
+                        f"Budget: {max_training_hours:.2f}h. Stopping training and proceeding to evaluation."
+                    )
+                    break
+
             # train
+            epoch_start_time = time()
             training_start_time = time()
             train_loss = self._train_epoch(
                 train_data, epoch_idx, show_progress=show_progress
@@ -1052,6 +1074,11 @@ class Trainer(AbstractTrainer):
                     break
 
                 valid_step += 1
+
+            # Track epoch duration for time budget
+            if max_training_hours is not None:
+                epoch_end_time = time()
+                last_epoch_duration = epoch_end_time - epoch_start_time
 
         self._add_hparam_to_tensorboard(self.best_valid_score)
         return self.best_valid_score, self.best_valid_result

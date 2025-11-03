@@ -130,6 +130,12 @@ if __name__ == "__main__":
         default=None,
         help="task type for the model (e.g., 'CF' for collaborative filtering)",
     )
+    parser.add_argument(
+        "--max_training_hours",
+        type=float,
+        default=None,
+        help="maximum number of hours for training/retraining (will stop before next epoch if time budget exceeded)",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -167,6 +173,8 @@ if __name__ == "__main__":
         config_dict["task_type"] = args.task_type
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
+    if args.max_training_hours is not None:
+        config_dict["max_training_hours"] = args.max_training_hours
 
     run(
         args.model,
