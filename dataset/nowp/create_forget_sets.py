@@ -1,79 +1,147 @@
 #!/usr/bin/env python3
 """
-Create forget sets for sensitive categories in 30music dataset
+Create forget sets for sensitive categories in NowPlaying dataset
 
 This script:
-1. Identifies tracks with sensitive tags (health, explicit)
-2. Finds all interactions with those tracks in the .inter file
-3. Creates separate forget set files for each category
+1. Identifies tracks with sensitive content using track titles and artist names
+2. Uses keyword-based filtering for categories like health, explicit content, etc.
+3. Finds all interactions with those tracks in the .inter file
+4. Creates separate forget set files for each category using USER-CENTRIC sampling
+
+Note: The NowPlaying dataset doesn't have tags, so we use keyword matching
+on track titles and artist names to identify sensitive content.
 """
 
-import json
+import csv
 import sys
+import re
 from pathlib import Path
 from collections import defaultdict
 
-# Define sensitive category mappings
+# Define sensitive category mappings with keywords
+# Each category has two types of keywords:
+# - 'exact': require full word match (to avoid false positives)
+# - 'relaxed': match as substring (for words unlikely to cause false positives)
 SENSITIVE_CATEGORIES = {
     'health': {
-        'tag_ids': {'154395', '15345', '233689', '214036', '59294'},
-        'tags': ['mental', 'anxiety', 'suicide', 'self-harm', 'depression'],
+        'exact': ['die'],
+        'relaxed': [
+            'depress', 'anxiety', 'suicide', 'self harm', 'therapy',
+            'ptsd', 'trauma', 'breakdown', 'bipolar', 'schizo',
+            'medication', 'overdose', 'cutting', 'death wish',
+            'end it all', 'kill myself'
+        ],
         'description': 'Mental health related content that may be triggering'
     },
     'explicit': {
-        'tag_ids': {'77138', '193026', '174963'},
-        'tags': ['explicit', 'profanity', 'nsfw'],
+        'exact': ['ass', 'hell', 'damn', 'sex'],
+        'relaxed': [
+            'fuck', 'shit', 'bitch', 'drugs', 'explicit',
+            'parental advisory', 'nsfw', 'uncensored', 'xxx',
+            'cocaine', 'heroin', 'weed', 'marijuana', 'drunk', 'alcohol'
+        ],
         'description': 'Explicit content with profanity or mature themes'
+    },
+    'violence': {
+        'exact': ['die', 'pain', 'kill', 'hell'],
+        'relaxed': [
+            'murder', 'blood', 'violence', 'gun', 'shoot', 'weapon',
+            'war', 'fight', 'attack', 'revenge', 'torture', 'suffer',
+            'massacre', 'slaughter', 'death', 'corpse', 'brutal'
+        ],
+        'description': 'Violent content and themes'
     }
 }
 
-def identify_sensitive_tracks(tracks_file, categories):
+def identify_sensitive_tracks(csv_file, categories):
     """
-    Identify tracks that have sensitive tags
+    Identify tracks that have sensitive content based on keywords in titles/artists
+    Memory efficient: streams through the CSV file
 
     Args:
-        tracks_file: Path to tracks.idomaar file
-        categories: Dictionary of sensitive categories with tag_ids
+        csv_file: Path to sessions_2018.csv
+        categories: Dictionary of sensitive categories with keywords
 
     Returns:
-        Dictionary mapping category name to set of track IDs
+        Dictionary mapping category name to set of musicbrainz IDs
     """
-    print("Identifying sensitive tracks from tags")
+    print("Identifying sensitive tracks from CSV file")
+    print("Using keyword matching on track titles and artist names")
 
     # Initialize sets for each category
     sensitive_tracks = {cat: set() for cat in categories}
 
-    print(f"\nProcessing tracks from: {tracks_file}")
+    # Compile regex patterns for each category (case insensitive)
+    # Two patterns per category: exact word match and relaxed substring match
+    exact_patterns = {}
+    relaxed_patterns = {}
 
-    total_tracks = 0
-    with open(tracks_file, 'r') as f:
-        for i, line in enumerate(f, 1):
-            if i % 500000 == 0:
-                print(f"  Processed {i:,} tracks...")
+    for cat_name, cat_info in categories.items():
+        # Exact word match pattern (with word boundaries)
+        if cat_info.get('exact'):
+            exact_pattern = '|'.join(r'\b' + re.escape(kw) + r'\b' for kw in cat_info['exact'])
+            exact_patterns[cat_name] = re.compile(exact_pattern, re.IGNORECASE)
+        else:
+            exact_patterns[cat_name] = None
 
-            total_tracks += 1
-            parts = line.strip().split('\t')
+        # Relaxed substring match pattern
+        if cat_info.get('relaxed'):
+            relaxed_pattern = '|'.join(re.escape(kw) for kw in cat_info['relaxed'])
+            relaxed_patterns[cat_name] = re.compile(relaxed_pattern, re.IGNORECASE)
+        else:
+            relaxed_patterns[cat_name] = None
 
-            if len(parts) < 5:
+    print(f"\nProcessing tracks from: {csv_file}")
+
+    total_tracks_checked = 0
+    unique_tracks = set()
+
+    with open(csv_file, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f, quotechar="'")
+
+        for i, row in enumerate(reader, 1):
+            if i % 1000000 == 0:
+                print(f"  Processed {i:,} lines...")
+
+            if len(row) < 7:
                 continue
 
-            track_id = parts[1]
+            track_title = row[3]
+            artist_name = row[4]
+            musicbrainz_id = row[5]
+            session_id = row[6]
 
-            try:
-                relations = json.loads(parts[4])
+            # Skip header
+            if session_id == 'session_id':
+                continue
 
-                if 'tags' in relations and relations['tags']:
-                    for tag in relations['tags']:
-                        tag_id = str(tag['id'])
+            if not musicbrainz_id:
+                continue
 
-                        # Check each category
-                        for cat_name, cat_info in categories.items():
-                            if tag_id in cat_info['tag_ids']:
-                                sensitive_tracks[cat_name].add(track_id)
-            except:
-                pass
+            # Track unique items
+            if musicbrainz_id not in unique_tracks:
+                unique_tracks.add(musicbrainz_id)
+                total_tracks_checked += 1
 
-    print(f"\nProcessed {total_tracks:,} total tracks")
+                # Combine title and artist for keyword search
+                text = f"{track_title} {artist_name}"
+
+                # Check each category with both exact and relaxed patterns
+                for cat_name in categories.keys():
+                    matched = False
+
+                    # Check exact word match pattern
+                    if exact_patterns[cat_name] and exact_patterns[cat_name].search(text):
+                        matched = True
+
+                    # Check relaxed substring match pattern
+                    if not matched and relaxed_patterns[cat_name] and relaxed_patterns[cat_name].search(text):
+                        matched = True
+
+                    if matched:
+                        sensitive_tracks[cat_name].add(musicbrainz_id)
+
+    print(f"\nProcessed {total_tracks_checked:,} unique tracks")
     print("\nSensitive tracks found:")
     for cat_name, track_set in sensitive_tracks.items():
         print(f"  {cat_name}: {len(track_set):,} tracks")
@@ -131,7 +199,8 @@ def create_forget_sets(inter_file, sensitive_tracks, output_dir, seeds=[2, 3, 5,
         print(f"    Users with sensitive interactions: {len(user_dict):,}")
         print(f"    Total sensitive interactions: {total_sensitive:,}")
         print(f"    ({total_sensitive/total_interactions*100:.4f}% of total)")
-        print(f"    Avg interactions per user: {total_sensitive/len(user_dict):.2f}")
+        if len(user_dict) > 0:
+            print(f"    Avg interactions per user: {total_sensitive/len(user_dict):.2f}")
 
     # Create forget sets for each category, seed, and fraction
     print("\nGenerating forget set files (user-centric sampling)")
@@ -185,7 +254,7 @@ def create_forget_sets(inter_file, sensitive_tracks, output_dir, seeds=[2, 3, 5,
                         break
 
                 # Create output filename
-                output_file = output_dir / f"30music_unlearn_pairs_sensitive_category_{cat_name}_seed_{seed}_unlearning_fraction_{fraction}.inter"
+                output_file = output_dir / f"nowp_unlearn_pairs_sensitive_category_{cat_name}_seed_{seed}_unlearning_fraction_{fraction}.inter"
 
                 # Write forget set
                 with open(output_file, 'w') as f:
@@ -203,37 +272,40 @@ def create_forget_sets(inter_file, sensitive_tracks, output_dir, seeds=[2, 3, 5,
 def main():
     # Set paths
     base_dir = Path(__file__).parent
-    tracks_file = base_dir / 'entities' / 'tracks.idomaar'
-    inter_file = base_dir / '30music.inter'
+    csv_file = base_dir / 'sessions_2018.csv'
+    inter_file = base_dir / 'nowp.inter'
     output_dir = base_dir
 
     # Check files exist
-    if not tracks_file.exists():
-        print(f"Error: Tracks file not found: {tracks_file}")
+    if not csv_file.exists():
+        print(f"Error: CSV file not found: {csv_file}")
         sys.exit(1)
 
     if not inter_file.exists():
         print(f"Error: .inter file not found: {inter_file}")
-        print("Please run convert_sessions_to_inter.py first")
+        print("Please run preprocess_nowp.py first")
         sys.exit(1)
 
-    print("30MUSIC FORGET SET GENERATOR\n")
+    print("NOWPLAYING FORGET SET GENERATOR\n")
     print("Sensitive categories:")
     for cat_name, cat_info in SENSITIVE_CATEGORIES.items():
         print(f"\n{cat_name}:")
-        print(f"  Tags: {', '.join(cat_info['tags'])}")
+        exact_kw = cat_info.get('exact', [])
+        relaxed_kw = cat_info.get('relaxed', [])
+        all_keywords = exact_kw + relaxed_kw
+        print(f"  Keywords (exact match): {', '.join(exact_kw[:5])}{'...' if len(exact_kw) > 5 else ''}")
+        print(f"  Keywords (relaxed match): {', '.join(relaxed_kw[:5])}{'...' if len(relaxed_kw) > 5 else ''}")
         print(f"  Description: {cat_info['description']}")
 
     # Step 1: Identify sensitive tracks
-    sensitive_tracks = identify_sensitive_tracks(tracks_file, SENSITIVE_CATEGORIES)
+    sensitive_tracks = identify_sensitive_tracks(csv_file, SENSITIVE_CATEGORIES)
 
     # Save sensitive track lists
-    # Use 'sensitive_asins' naming for consistency with other datasets
     print("\nSaving sensitive track IDs...")
     for cat_name, track_set in sensitive_tracks.items():
-        output_file = output_dir / f"sensitive_asins_{cat_name}.txt"
+        output_file = output_dir / f"sensitive_tracks_{cat_name}.txt"
         with open(output_file, 'w') as f:
-            for track_id in sorted(track_set, key=lambda x: int(x)):
+            for track_id in sorted(track_set):
                 f.write(f"{track_id}\n")
         print(f"  {cat_name}: {output_file}")
 
