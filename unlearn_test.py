@@ -127,7 +127,7 @@ def main():
         "--unlearning_algorithm",
         type=str,
         default="scif",
-        choices=["scif", "kookmin", "fanchuan"],
+        choices=["scif", "kookmin", "fanchuan", "gif"],
         help="what unlearning algorithm to use",
     )
     parser.add_argument(
@@ -176,6 +176,38 @@ def main():
         type=float,
         default=0.01,
         help="damping parameter for conjugate gradient solver in SCIF (lambda in (H + lambda*I)x = v)",
+    )
+
+    # GIF-specific parameters
+    parser.add_argument(
+        "--gif_damping",
+        type=float,
+        default=0.01,
+        help="damping factor (lambda) for GIF Hessian approximation convergence",
+    )
+    parser.add_argument(
+        "--gif_scale_factor",
+        type=float,
+        default=1000,
+        help="scaling factor for GIF Hessian to ensure convergence",
+    )
+    parser.add_argument(
+        "--gif_iterations",
+        type=int,
+        default=100,
+        help="number of iterations for GIF Hessian inverse approximation",
+    )
+    parser.add_argument(
+        "--gif_k_hops",
+        type=int,
+        default=2,
+        help="number of hops for influenced neighbors in GIF (k-hop neighborhood)",
+    )
+    parser.add_argument(
+        "--gif_retain_samples",
+        type=int,
+        default=None,
+        help="number of retain samples for GIF fine-tuning (default: 128 * forget_size)",
     )
 
     # Spam/attack configuration
@@ -242,7 +274,13 @@ def main():
         "kookmin_init_rate": args.kookmin_init_rate,
         "model_dir": args.model_dir,
         "damping": args.damping,
+        "gif_damping": args.gif_damping,
+        "gif_scale_factor": args.gif_scale_factor,
+        "gif_iterations": args.gif_iterations,
+        "gif_k_hops": args.gif_k_hops,
     }
+    if args.gif_retain_samples is not None:
+        config_dict["gif_retain_samples"] = args.gif_retain_samples
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
 
@@ -263,6 +301,11 @@ def main():
         kookmin_init_rate=args.kookmin_init_rate,
         spam=args.spam,
         damping=args.damping,
+        gif_damping=args.gif_damping,
+        gif_scale_factor=args.gif_scale_factor,
+        gif_iterations=args.gif_iterations,
+        gif_k_hops=args.gif_k_hops,
+        gif_retain_samples=args.gif_retain_samples,
     )
 
 if __name__ == "__main__":

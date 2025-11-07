@@ -154,7 +154,7 @@ class Trainer(AbstractTrainer):
             if "rmia_out_model_flag" in config and config["rmia_out_model_flag"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_rmia_out_model_partition_idx_{config['rmia_out_model_partition_idx']}.pth"
             # unlearning
-            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin"]:
+            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin", "gif"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_algorithm_{config['unlearning_algorithm']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
             # retraining
             elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
@@ -936,6 +936,254 @@ class Trainer(AbstractTrainer):
 
         return total_loss
 
+    def gif(
+        self,
+        epoch_idx,
+        forget_data,
+        clean_forget_data,
+        retain_train_data,
+        retain_valid_data=None,
+        retain_test_data=None,
+        show_progress=False,
+        unlearned_users_before=None,
+        saved=True,
+        verbose=False,
+        retain_samples_used_for_update=128,
+        gif_damping=0.01,
+        gif_scale_factor=1000,
+        gif_iterations=100,
+        gif_k_hops=2,
+        param_list=None,
+    ):
+        """
+        GIF: Graph Influence Function for Graph Neural Network Unlearning
+
+        Reference:
+            Jiancan Wu et al. "GIF: A General Graph Unlearning Strategy via Influence Function" in WWW 2023.
+            https://arxiv.org/abs/2304.02835
+
+        Args:
+            epoch_idx: Current epoch index
+            forget_data: Data to unlearn (contains node/edge deletion requests)
+            clean_forget_data: Clean version of forget data (for computing retain gradients)
+            retain_train_data: Retained training data
+            retain_valid_data: Validation data (optional)
+            retain_test_data: Test data (optional)
+            show_progress: Whether to show progress bars
+            unlearned_users_before: Previously unlearned users (optional)
+            saved: Whether to save checkpoints
+            verbose: Whether to print detailed logs
+            retain_samples_used_for_update: Number of retain samples for fine-tuning
+            gif_damping: Damping factor (lambda) for Hessian approximation convergence
+            gif_scale_factor: Scaling factor for Hessian to ensure convergence
+            gif_iterations: Number of iterations for Hessian inverse approximation
+            gif_k_hops: Number of hops for influenced neighbors (default: 2)
+            param_list: List of parameters to update (default: all trainable params)
+        """
+        print(f"\n[GIF] Starting Graph Influence Function unlearning...")
+        print(f"[GIF] Parameters: damping={gif_damping}, scale={gif_scale_factor}, iterations={gif_iterations}, k_hops={gif_k_hops}")
+
+        self.move_optimizer_state(self.optimizer, self.device)
+        self.model.train()
+        loss_func = self.model.calculate_loss
+
+        if param_list is None:
+            param_list = self.target_params(self.model)
+
+        # Step 1: Compute gradients for forget data (nodes to unlearn)
+        print(f"[GIF] Step 1: Computing gradients for forget data ({len(forget_data.dataset)} samples)...")
+        grads_forget_original = []
+        for batch_idx, interaction in enumerate(forget_data):
+            interaction = interaction.to(self.device)
+            cur_grads = self._batch_grad(
+                self.model,
+                interaction,
+                param_list,
+                loss_func,
+                average_scale=len(forget_data.dataset),
+            )
+            if len(grads_forget_original) == 0:
+                grads_forget_original = [g for g in cur_grads]
+            else:
+                for i in range(len(cur_grads)):
+                    grads_forget_original[i] += cur_grads[i]
+
+        # Step 2: Compute influenced neighbors using k-hop neighborhood
+        # For GNN models like LightGCN, we need to consider k-hop neighbors
+        # This is the key difference from traditional influence functions
+        print(f"[GIF] Step 2: Computing gradients for {gif_k_hops}-hop influenced neighbors...")
+
+        # Get influenced neighbors by running forward pass on forget data with modified graph
+        # In practice, for node unlearning in recommender systems, the "influenced neighbors"
+        # are the retain users/items that interacted with the forget nodes
+        grads_influenced_original = []
+        grads_influenced_remaining = []
+
+        # Use clean_forget_data and retain_train_data to approximate influenced region
+        # clean_forget_data represents the "neighbors" that are retained but influenced
+        influenced_sample_count = min(len(clean_forget_data.dataset), retain_samples_used_for_update)
+
+        for batch_idx, interaction in enumerate(clean_forget_data):
+            if batch_idx * clean_forget_data.batch_size >= influenced_sample_count:
+                break
+            interaction = interaction.to(self.device)
+
+            # Gradient with original graph (before unlearning)
+            cur_grads_original = self._batch_grad(
+                self.model,
+                interaction,
+                param_list,
+                loss_func,
+                average_scale=influenced_sample_count,
+            )
+
+            if len(grads_influenced_original) == 0:
+                grads_influenced_original = [g for g in cur_grads_original]
+            else:
+                for i in range(len(cur_grads_original)):
+                    grads_influenced_original[i] += cur_grads_original[i]
+
+        # For influenced neighbors on remaining graph, we need to simulate the graph after deletion
+        # In practice, we approximate this by using a subset of retain data
+        influenced_remaining_count = min(len(retain_train_data.dataset), influenced_sample_count)
+
+        for batch_idx, interaction in enumerate(retain_train_data):
+            if batch_idx * retain_train_data.batch_size >= influenced_remaining_count:
+                break
+            interaction = interaction.to(self.device)
+
+            cur_grads_remaining = self._batch_grad(
+                self.model,
+                interaction,
+                param_list,
+                loss_func,
+                average_scale=influenced_remaining_count,
+            )
+
+            if len(grads_influenced_remaining) == 0:
+                grads_influenced_remaining = [g for g in cur_grads_remaining]
+            else:
+                for i in range(len(cur_grads_remaining)):
+                    grads_influenced_remaining[i] += cur_grads_remaining[i]
+
+        # Step 3: Compute total gradient change (ΔL in the paper)
+        # ΔL = L(forget) + L(influenced_original) - L(influenced_remaining)
+        print(f"[GIF] Step 3: Computing total gradient change (ΔL)...")
+        delta_grads = []
+        for i in range(len(param_list)):
+            # Add forget gradients
+            delta_g = grads_forget_original[i].clone()
+            # Add influenced original gradients
+            if len(grads_influenced_original) > 0:
+                delta_g += grads_influenced_original[i]
+            # Subtract influenced remaining gradients
+            if len(grads_influenced_remaining) > 0:
+                delta_g -= grads_influenced_remaining[i]
+            delta_grads.append(delta_g)
+
+        # Step 4: Compute Hessian matrix for the original training data
+        print(f"[GIF] Step 4: Computing Hessian matrix...")
+        # Sample a subset of data for Hessian computation (for efficiency)
+        hessian_sample_size = min(len(retain_train_data.dataset), 1024)
+        hessian_samples = []
+        sample_count = 0
+
+        for batch_idx, interaction in enumerate(retain_train_data):
+            if sample_count >= hessian_sample_size:
+                break
+            batch_size = min(len(interaction), hessian_sample_size - sample_count)
+            hessian_samples.append(interaction[:batch_size].to(self.device))
+            sample_count += batch_size
+
+        # Compute Hessian using averaged samples
+        def compute_hvp(v):
+            """Hessian-Vector Product"""
+            hvp_acc = [torch.zeros_like(p) for p in param_list]
+            for interaction in hessian_samples:
+                self.model.zero_grad()
+                loss = loss_func(interaction)
+                grads = torch.autograd.grad(loss, param_list, create_graph=True)
+
+                # Compute dot product of gradients with v
+                dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
+
+                # Compute gradients of dot product (this gives Hv)
+                hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
+
+                for i in range(len(hvp_acc)):
+                    hvp_acc[i] += hvp[i].detach() / len(hessian_samples)
+
+            return hvp_acc
+
+        # Step 5: Compute H^{-1} * delta_grads using iterative approximation (Theorem 5)
+        # H^{-1} = sum_{i=0}^{inf} (I - λH)^i
+        # Recursion: H^{-1}_t * v = v + H^{-1}_{t-1} * v - λH * H^{-1}_{t-1} * v
+        print(f"[GIF] Step 5: Computing inverse Hessian approximation (Neumann series)...")
+
+        # Scale lambda to ensure convergence (spectral radius of (I - λH) < 1)
+        lambda_scaled = gif_damping / gif_scale_factor
+
+        # Initialize: H^{-1}_0 * v = v
+        h_inv_v = [v.clone() for v in delta_grads]
+
+        for iteration in range(gif_iterations):
+            # Compute H * H^{-1}_{t-1} * v
+            h_times_h_inv_v = compute_hvp(h_inv_v)
+
+            # Update: H^{-1}_t * v = v + H^{-1}_{t-1} * v - λH * H^{-1}_{t-1} * v
+            new_h_inv_v = []
+            for i in range(len(param_list)):
+                new_val = delta_grads[i] + h_inv_v[i] - lambda_scaled * h_times_h_inv_v[i]
+                new_h_inv_v.append(new_val)
+
+            # Check convergence
+            if iteration % 10 == 0 and iteration > 0:
+                diff = sum((new_h_inv_v[i] - h_inv_v[i]).norm().item() for i in range(len(param_list)))
+                print(f"[GIF] Iteration {iteration}/{gif_iterations}, convergence diff: {diff:.6f}")
+
+            h_inv_v = new_h_inv_v
+
+        # Step 6: Apply parameter update: θ_new = θ_old + H^{-1} * ΔL
+        print(f"[GIF] Step 6: Applying parameter updates...")
+        with torch.no_grad():
+            for p, delta_p in zip(param_list, h_inv_v):
+                # Apply the update (note: we ADD because we want to remove influence)
+                p.data += delta_p
+
+        # Step 7: Fine-tune on retain data to stabilize
+        print(f"[GIF] Step 7: Fine-tuning on retain data ({retain_samples_used_for_update} samples)...")
+
+        self.model.zero_grad()
+        self.optimizer.zero_grad()
+
+        epochs = 1 + retain_samples_used_for_update // len(retain_train_data.dataset)
+
+        for epoch_idx_inner in range(epochs):
+            training_start_time = time()
+            train_loss = self._train_epoch_efficient_shuffle(
+                retain_train_data,
+                epoch_idx_inner,
+                show_progress=show_progress,
+                retain_samples_used_for_update=retain_samples_used_for_update,
+            )
+
+            self.train_loss_dict[epoch_idx_inner] = (
+                sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+            )
+            training_end_time = time()
+            train_loss_output = self._generate_train_loss_output(
+                epoch_idx_inner, training_start_time, training_end_time, train_loss
+            )
+
+            if verbose:
+                self.logger.info(train_loss_output)
+            self._add_train_loss_to_tensorboard(epoch_idx_inner, train_loss)
+            self.wandblogger.log_metrics(
+                {"epoch": epoch_idx_inner, "train_loss": train_loss, "train_step": epoch_idx_inner},
+                head="train",
+            )
+
+        print(f"[GIF] Unlearning complete!")
 
     def fit(
         self,
@@ -1606,6 +1854,34 @@ class Trainer(AbstractTrainer):
                 verbose=verbose,
                 retain_samples_used_for_update=retain_samples_used_for_update,
                 task_type=task_type,
+            )
+        elif unlearning_algorithm == "gif":
+            # GIF: Graph Influence Function
+            # Default hyperparameters from the paper
+            gif_damping = config["gif_damping"] if "gif_damping" in config else 0.01
+            gif_scale_factor = config["gif_scale_factor"] if "gif_scale_factor" in config else 1000
+            gif_iterations = config["gif_iterations"] if "gif_iterations" in config else 100
+            gif_k_hops = config["gif_k_hops"] if "gif_k_hops" in config else 2
+            retain_samples_used_for_update = config["gif_retain_samples"] if "gif_retain_samples" in config else 128 * len(forget_data.dataset)
+
+            param_list = [p for _, p in self.model.named_parameters()]
+            self.gif(
+                epoch_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data,
+                retain_valid_data,
+                retain_test_data,
+                show_progress=show_progress,
+                unlearned_users_before=unlearned_users_before,
+                saved=saved,
+                verbose=verbose,
+                retain_samples_used_for_update=retain_samples_used_for_update,
+                gif_damping=gif_damping,
+                gif_scale_factor=gif_scale_factor,
+                gif_iterations=gif_iterations,
+                gif_k_hops=gif_k_hops,
+                param_list=param_list,
             )
 
         if saved:

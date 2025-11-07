@@ -517,6 +517,11 @@ def unlearn_recbole(
     kookmin_init_rate=0.01,
     spam=False,
     damping=0.01,
+    gif_damping=0.01,
+    gif_scale_factor=1000,
+    gif_iterations=100,
+    gif_k_hops=2,
+    gif_retain_samples=None,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -656,6 +661,8 @@ def unlearn_recbole(
     elif unlearning_algorithm == "fanchuan":
         retain_sessions_per_request = 32  # Number of complete user sessions
         contrastive_samples_per_iteration = 8  # For contrastive learning iterations
+    elif unlearning_algorithm == "gif":
+        retain_sessions_per_request = 32  # Number of complete user sessions
     
     # Pre-sample retain data for all unlearning requests
     total_unlearn_requests = len(pairs_by_user)
