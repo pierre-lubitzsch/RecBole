@@ -1,6 +1,7 @@
 use_gpu: True
 show_progress: False
 train_neg_sample_args: ~
+train_batch_size: 256
 epochs: 30
 
 USER_ID_FIELD: user_id
