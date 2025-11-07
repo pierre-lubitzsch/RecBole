@@ -16,6 +16,8 @@ eval_args:
     split: {RS: [0.8, 0.1, 0.1]}
     mode: full
 
+eval_batch_size: 256
+
 min_user_inter_num: 3
 
 early_stop: True
