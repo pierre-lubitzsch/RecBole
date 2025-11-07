@@ -1858,11 +1858,11 @@ class Trainer(AbstractTrainer):
         elif unlearning_algorithm == "gif":
             # GIF: Graph Influence Function
             # Default hyperparameters from the paper
-            gif_damping = config["gif_damping"] if "gif_damping" in config else 0.01
-            gif_scale_factor = config["gif_scale_factor"] if "gif_scale_factor" in config else 1000
-            gif_iterations = config["gif_iterations"] if "gif_iterations" in config else 100
-            gif_k_hops = config["gif_k_hops"] if "gif_k_hops" in config else 2
-            retain_samples_used_for_update = config["gif_retain_samples"] if "gif_retain_samples" in config else 128 * len(forget_data.dataset)
+            gif_damping = self.config["gif_damping"] if "gif_damping" in self.config else 0.01
+            gif_scale_factor = self.config["gif_scale_factor"] if "gif_scale_factor" in self.config else 1000
+            gif_iterations = self.config["gif_iterations"] if "gif_iterations" in self.config else 100
+            gif_k_hops = self.config["gif_k_hops"] if "gif_k_hops" in self.config else 2
+            retain_samples_used_for_update = self.config["gif_retain_samples"] if "gif_retain_samples" in self.config else 128 * len(forget_data.dataset)
 
             param_list = [p for _, p in self.model.named_parameters()]
             self.gif(
