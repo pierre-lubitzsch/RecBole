@@ -832,7 +832,24 @@ def unlearn_recbole(
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
             sessions_needed = int(total_samples_needed / avg_session_length) + 1
-    
+
+        elif unlearning_algorithm == "gif":
+            retain_batch_size = config["train_batch_size"]
+            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+            # GIF: similar to kookmin approach
+            retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 128 * forget_size
+            hessian_sample_size = 1024
+
+            total_samples_needed = max(
+                retain_samples_used_for_update,
+                hessian_sample_size
+            )
+
+            # Cap to 10% of dataset
+            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+            sessions_needed = int(total_samples_needed / avg_session_length) + 1
+
         # Get complete sessions
         retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
             sessions_needed,
