@@ -1046,16 +1046,18 @@ class Trainer(AbstractTrainer):
 
         print(f"[GIF DEBUG] Found {len(target_items)} total items for forget users")
 
-        if k >= 1:
+        # 2-hop: Get users who interacted with those items (this will include the forget user)
+        if k >= 2:
             # 2-hop: Get other users who interacted with those items
             for item_id in target_items:
                 if item_id < user_item_matrix.shape[1]:
                     other_users = user_item_matrix[:, item_id].nonzero()[0]
                     influenced_users.update(other_users)
 
-            print(f"[GIF DEBUG] After 1-hop (finding users who interact with same items): {len(influenced_users)} users")
+            print(f"[GIF DEBUG] After finding 2-hop users (who interact with same items): {len(influenced_users)} users (includes forget user)")
 
-        if k >= 2:
+        # 4-hop: Expand to users 4-hops away
+        if k >= 4:
             # 3-hop: Get items those users interacted with
             hop_2_items = set()
             for neighbor_user in list(influenced_users):
