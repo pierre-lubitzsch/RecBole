@@ -955,6 +955,7 @@ def unlearn_recbole(
             idea_delta=idea_delta,
             idea_iterations=idea_iterations,
             idea_hessian_samples=idea_hessian_samples,
+            original_dataset=dataset,
         )
 
         request_end_time = time.time()

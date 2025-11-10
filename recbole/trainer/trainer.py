@@ -971,7 +971,7 @@ class Trainer(AbstractTrainer):
 
         return matrix
 
-    def _build_original_user_item_matrix(self, retain_dataset, forget_dataset):
+    def _build_original_user_item_matrix(self, original_dataset, retain_dataset, forget_dataset):
         """
         Build a sparse user-item matrix from the ORIGINAL data (retain + forget).
 
@@ -1039,7 +1039,12 @@ class Trainer(AbstractTrainer):
         for user_id in user_ids:
             if user_id < user_item_matrix.shape[0]:
                 user_items = user_item_matrix[user_id].nonzero()[1]
+                print(f"[GIF DEBUG] User {user_id} has {len(user_items)} items in original matrix")
                 target_items.update(user_items)
+            else:
+                print(f"[GIF DEBUG] User {user_id} is out of bounds (matrix shape: {user_item_matrix.shape})")
+
+        print(f"[GIF DEBUG] Found {len(target_items)} total items for forget users")
 
         if k >= 1:
             # 2-hop: Get other users who interacted with those items
@@ -1047,6 +1052,8 @@ class Trainer(AbstractTrainer):
                 if item_id < user_item_matrix.shape[1]:
                     other_users = user_item_matrix[:, item_id].nonzero()[0]
                     influenced_users.update(other_users)
+
+            print(f"[GIF DEBUG] After 1-hop (finding users who interact with same items): {len(influenced_users)} users")
 
         if k >= 2:
             # 3-hop: Get items those users interacted with
@@ -1331,6 +1338,7 @@ class Trainer(AbstractTrainer):
         gif_k_hops=2,
         gif_use_true_khop=False,
         param_list=None,
+        original_dataset=None,
     ):
         """
         GIF: Graph Influence Function for Graph Neural Network Unlearning
@@ -1395,7 +1403,7 @@ class Trainer(AbstractTrainer):
             # Build user-item sparse matrix for k-hop computation
             # IMPORTANT: Need the ORIGINAL graph (retain + forget) to find k-hop neighbors
             print(f"[GIF] Building user-item interaction matrix from original data...")
-            user_item_matrix = self._build_original_user_item_matrix(retain_train_data.dataset, forget_data.dataset)
+            user_item_matrix = self._build_original_user_item_matrix(original_dataset, retain_train_data.dataset, forget_data.dataset)
 
             # Extract user IDs from forget data
             forget_user_ids = set()
@@ -2791,6 +2799,7 @@ class Trainer(AbstractTrainer):
         idea_delta=0.01,
         idea_iterations=100,
         idea_hessian_samples=1024,
+        original_dataset=None,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -2886,6 +2895,7 @@ class Trainer(AbstractTrainer):
                 gif_k_hops=self.config["gif_k_hops"] if "gif_k_hops" in self.config and self.config["gif_k_hops"] is not None else 2,
                 gif_use_true_khop=self.config["gif_use_true_khop"] if "gif_use_true_khop" in self.config and self.config["gif_use_true_khop"] is not None else False,
                 param_list=param_list,
+                original_dataset=original_dataset,
             )
         elif unlearning_algorithm == "ceu":
             # CEU: Certified Edge Unlearning
