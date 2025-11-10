@@ -1234,9 +1234,6 @@ class Trainer(AbstractTrainer):
 
         # Now rebuild the normalized adjacency matrix using the same process as the model
         # This replicates the logic from LightGCN.get_norm_adj_mat()
-        n_users = dataset.user_num
-        n_items = dataset.item_num
-
         A = sp.dok_matrix(
             (n_users + n_items, n_users + n_items),
             dtype=np.float32
