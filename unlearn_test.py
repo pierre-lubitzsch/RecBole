@@ -127,7 +127,7 @@ def main():
         "--unlearning_algorithm",
         type=str,
         default="scif",
-        choices=["scif", "kookmin", "fanchuan", "gif"],
+        choices=["scif", "kookmin", "fanchuan", "gif", "ceu"],
         help="what unlearning algorithm to use",
     )
     parser.add_argument(
@@ -210,6 +210,38 @@ def main():
         help="number of retain samples for GIF fine-tuning (default: 128 * forget_size)",
     )
 
+    # CEU-specific parameters
+    parser.add_argument(
+        "--ceu_lambda",
+        type=float,
+        default=0.01,
+        help="regularization rate (lambda) for CEU loss function",
+    )
+    parser.add_argument(
+        "--ceu_sigma",
+        type=float,
+        default=0.1,
+        help="standard deviation (sigma) for Gaussian noise in CEU",
+    )
+    parser.add_argument(
+        "--ceu_epsilon",
+        type=float,
+        default=0.1,
+        help="epsilon parameter for (epsilon, delta)-certified unlearning guarantee",
+    )
+    parser.add_argument(
+        "--ceu_cg_iterations",
+        type=int,
+        default=100,
+        help="number of conjugate gradient iterations for inverse Hessian approximation in CEU",
+    )
+    parser.add_argument(
+        "--ceu_hessian_samples",
+        type=int,
+        default=1024,
+        help="number of samples used for Hessian computation in CEU",
+    )
+
     # Spam/attack configuration
     parser.add_argument(
         "--spam",
@@ -278,6 +310,11 @@ def main():
         "gif_scale_factor": args.gif_scale_factor,
         "gif_iterations": args.gif_iterations,
         "gif_k_hops": args.gif_k_hops,
+        "ceu_lambda": args.ceu_lambda,
+        "ceu_sigma": args.ceu_sigma,
+        "ceu_epsilon": args.ceu_epsilon,
+        "ceu_cg_iterations": args.ceu_cg_iterations,
+        "ceu_hessian_samples": args.ceu_hessian_samples,
     }
     if args.gif_retain_samples is not None:
         config_dict["gif_retain_samples"] = args.gif_retain_samples
@@ -306,6 +343,11 @@ def main():
         gif_iterations=args.gif_iterations,
         gif_k_hops=args.gif_k_hops,
         gif_retain_samples=args.gif_retain_samples,
+        ceu_lambda=args.ceu_lambda,
+        ceu_sigma=args.ceu_sigma,
+        ceu_epsilon=args.ceu_epsilon,
+        ceu_cg_iterations=args.ceu_cg_iterations,
+        ceu_hessian_samples=args.ceu_hessian_samples,
     )
 
 if __name__ == "__main__":

@@ -522,6 +522,11 @@ def unlearn_recbole(
     gif_iterations=100,
     gif_k_hops=2,
     gif_retain_samples=None,
+    ceu_lambda=0.01,
+    ceu_sigma=0.1,
+    ceu_epsilon=0.1,
+    ceu_cg_iterations=100,
+    ceu_hessian_samples=1024,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -662,6 +667,8 @@ def unlearn_recbole(
         retain_sessions_per_request = 32  # Number of complete user sessions
         contrastive_samples_per_iteration = 8  # For contrastive learning iterations
     elif unlearning_algorithm == "gif":
+        retain_sessions_per_request = 32  # Number of complete user sessions
+    elif unlearning_algorithm == "ceu":
         retain_sessions_per_request = 32  # Number of complete user sessions
     
     # Pre-sample retain data for all unlearning requests
@@ -850,6 +857,23 @@ def unlearn_recbole(
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
             sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
+        elif unlearning_algorithm == "ceu":
+            retain_batch_size = config["train_batch_size"]
+            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+            # CEU: needs samples for Hessian computation and influence estimation
+            ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
+            retain_samples_used_for_update = 128 * forget_size
+
+            total_samples_needed = max(
+                retain_samples_used_for_update,
+                ceu_hessian_samples
+            )
+
+            # Cap to 10% of dataset
+            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+            sessions_needed = int(total_samples_needed / avg_session_length) + 1
+
         # Get complete sessions
         retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
             sessions_needed,
@@ -888,6 +912,11 @@ def unlearn_recbole(
             retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
             task_type=config.task_type,
             damping=damping,
+            ceu_lambda=ceu_lambda,
+            ceu_sigma=ceu_sigma,
+            ceu_epsilon=ceu_epsilon,
+            ceu_cg_iterations=ceu_cg_iterations,
+            ceu_hessian_samples=ceu_hessian_samples,
         )
 
         request_end_time = time.time()
