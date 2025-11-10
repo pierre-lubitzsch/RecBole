@@ -676,6 +676,8 @@ def unlearn_recbole(
         retain_sessions_per_request = 32  # Number of complete user sessions
     elif unlearning_algorithm == "ceu":
         retain_sessions_per_request = 32  # Number of complete user sessions
+    elif unlearning_algorithm == "idea":
+        retain_sessions_per_request = 32  # Number of complete user sessions
     
     # Pre-sample retain data for all unlearning requests
     total_unlearn_requests = len(pairs_by_user)
