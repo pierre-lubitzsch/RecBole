@@ -1027,6 +1027,8 @@ class Trainer(AbstractTrainer):
         Returns:
             set: Set of user IDs within k-hops (excluding input users)
         """
+        import scipy.sparse as sp
+
         influenced_users = set()
         input_users = set(user_ids)
 
@@ -1034,24 +1036,31 @@ class Trainer(AbstractTrainer):
         if not isinstance(user_ids, (list, tuple, np.ndarray)):
             user_ids = [user_ids]
 
+        # Convert to CSR for efficient row access (user->items)
+        # and CSC for efficient column access (item->users)
+        user_item_csr = user_item_matrix.tocsr() if not sp.isspmatrix_csr(user_item_matrix) else user_item_matrix
+        user_item_csc = user_item_matrix.tocsc()
+
         # Get items that target users interacted with (1-hop)
         target_items = set()
         for user_id in user_ids:
-            if user_id < user_item_matrix.shape[0]:
-                user_items = user_item_matrix[user_id].nonzero()[1]
+            if user_id < user_item_csr.shape[0]:
+                user_items = user_item_csr[user_id].nonzero()[1]
                 print(f"[GIF DEBUG] User {user_id} has {len(user_items)} items in original matrix")
                 target_items.update(user_items)
             else:
-                print(f"[GIF DEBUG] User {user_id} is out of bounds (matrix shape: {user_item_matrix.shape})")
+                print(f"[GIF DEBUG] User {user_id} is out of bounds (matrix shape: {user_item_csr.shape})")
 
         print(f"[GIF DEBUG] Found {len(target_items)} total items for forget users")
 
         # 2-hop: Get users who interacted with those items (this will include the forget user)
         if k >= 2:
             # 2-hop: Get other users who interacted with those items
+            # Use CSC format for efficient column slicing
             for item_id in target_items:
-                if item_id < user_item_matrix.shape[1]:
-                    other_users = user_item_matrix[:, item_id].nonzero()[0]
+                if item_id < user_item_csc.shape[1]:
+                    other_users = user_item_csc[:, item_id].nonzero()[0]
+                    print(f"[GIF DEBUG] Item {item_id} has {len(other_users)} users who interacted with it")
                     influenced_users.update(other_users)
 
             print(f"[GIF DEBUG] After finding 2-hop users (who interact with same items): {len(influenced_users)} users (includes forget user)")
@@ -1061,14 +1070,14 @@ class Trainer(AbstractTrainer):
             # 3-hop: Get items those users interacted with
             hop_2_items = set()
             for neighbor_user in list(influenced_users):
-                if neighbor_user not in input_users and neighbor_user < user_item_matrix.shape[0]:
-                    neighbor_items = user_item_matrix[neighbor_user].nonzero()[1]
+                if neighbor_user not in input_users and neighbor_user < user_item_csr.shape[0]:
+                    neighbor_items = user_item_csr[neighbor_user].nonzero()[1]
                     hop_2_items.update(neighbor_items)
 
             # 4-hop: Get users who interacted with those items
             for item_id in hop_2_items:
-                if item_id < user_item_matrix.shape[1]:
-                    other_users = user_item_matrix[:, item_id].nonzero()[0]
+                if item_id < user_item_csc.shape[1]:
+                    other_users = user_item_csc[:, item_id].nonzero()[0]
                     influenced_users.update(other_users)
 
         # Remove the original users
