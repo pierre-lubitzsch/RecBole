@@ -18,6 +18,7 @@ recbole.trainer.trainer
 """
 
 import os
+from contextlib import contextmanager
 
 from logging import getLogger
 from time import time
@@ -1073,6 +1074,194 @@ class Trainer(AbstractTrainer):
 
         return filtered_batches
 
+    def _model_has_graph_structure(self, model):
+        """
+        Detect if the model uses graph convolution and has an adjacency matrix.
+
+        Args:
+            model: The recommendation model
+
+        Returns:
+            tuple: (has_graph, graph_attr_name)
+                has_graph (bool): True if model has graph structure
+                graph_attr_name (str): Name of the adjacency matrix attribute
+        """
+        # Check for LightGCN-style models
+        if hasattr(model, 'norm_adj_matrix'):
+            return True, 'norm_adj_matrix'
+
+        # Check for SGL-style models
+        if hasattr(model, 'train_graph'):
+            return True, 'train_graph'
+
+        # Add more model types as needed
+        # For NGCF, DGCF, etc.
+        if hasattr(model, 'norm_adj_mat'):
+            return True, 'norm_adj_mat'
+
+        # No graph structure found
+        return False, None
+
+    def _build_modified_adj_matrix(self, model, forget_data, dataset):
+        """
+        Build a modified adjacency matrix with forget edges removed.
+
+        This is crucial for GNN models like LightGCN where the forward pass
+        uses the graph structure. When computing gradients on the "remaining graph",
+        we need to exclude forget edges from the message passing.
+
+        Args:
+            model: The recommendation model
+            forget_data: DataLoader containing edges to remove
+            dataset: The dataset object
+
+        Returns:
+            torch.sparse.FloatTensor: Modified adjacency matrix without forget edges
+        """
+        import scipy.sparse as sp
+
+        # Extract forget edges (user-item pairs to remove)
+        forget_users = []
+        forget_items = []
+
+        for batch in forget_data:
+            users = batch[dataset.uid_field].cpu().numpy()
+            items = batch[dataset.iid_field].cpu().numpy()
+            forget_users.extend(users)
+            forget_items.extend(items)
+
+        forget_edges = set(zip(forget_users, forget_items))
+        print(f"[GIF] Building modified adjacency matrix excluding {len(forget_edges)} forget edges...")
+
+        # Get the original interaction matrix from dataset
+        # This should be the same matrix used to build the original adj matrix
+        if hasattr(dataset, 'inter_matrix'):
+            interaction_matrix = dataset.inter_matrix(form='coo').astype(np.float32)
+        else:
+            # Fallback: build from inter_feat
+            inter_feat = dataset.inter_feat
+            user_ids = inter_feat[dataset.uid_field].numpy()
+            item_ids = inter_feat[dataset.iid_field].numpy()
+            n_users = dataset.user_num
+            n_items = dataset.item_num
+            data = np.ones(len(user_ids))
+            interaction_matrix = sp.coo_matrix(
+                (data, (user_ids, item_ids)),
+                shape=(n_users, n_items)
+            ).astype(np.float32)
+
+        # Remove forget edges from interaction matrix
+        # Convert to lists for filtering
+        row = interaction_matrix.row.tolist()
+        col = interaction_matrix.col.tolist()
+        data = interaction_matrix.data.tolist()
+
+        # Filter out forget edges
+        filtered_row = []
+        filtered_col = []
+        filtered_data = []
+
+        removed_count = 0
+        for i in range(len(row)):
+            edge = (row[i], col[i])
+            if edge not in forget_edges:
+                filtered_row.append(row[i])
+                filtered_col.append(col[i])
+                filtered_data.append(data[i])
+            else:
+                removed_count += 1
+
+        print(f"[GIF] Removed {removed_count} edges from adjacency matrix")
+
+        # Build modified interaction matrix
+        modified_interaction_matrix = sp.coo_matrix(
+            (filtered_data, (filtered_row, filtered_col)),
+            shape=interaction_matrix.shape
+        ).astype(np.float32)
+
+        # Now rebuild the normalized adjacency matrix using the same process as the model
+        # This replicates the logic from LightGCN.get_norm_adj_mat()
+        n_users = dataset.user_num
+        n_items = dataset.item_num
+
+        A = sp.dok_matrix(
+            (n_users + n_items, n_users + n_items),
+            dtype=np.float32
+        )
+
+        inter_M = modified_interaction_matrix
+        inter_M_t = modified_interaction_matrix.transpose()
+
+        data_dict = dict(
+            zip(zip(range(n_users), range(n_users, n_users + n_items)),
+                [1] * n_users)
+        )
+        data_dict.update(
+            dict(
+                zip(
+                    zip(range(n_users, n_users + n_items), range(n_users)),
+                    [1] * n_items
+                )
+            )
+        )
+        data_dict.update(
+            dict(zip(zip(inter_M.row, inter_M.col + n_users), inter_M.data))
+        )
+        data_dict.update(
+            dict(zip(zip(inter_M_t.row + n_users, inter_M_t.col), inter_M_t.data))
+        )
+        A._update(data_dict)
+
+        # Normalize: D^{-0.5} * A * D^{-0.5}
+        sumArr = (A > 0).sum(axis=1)
+        diag = np.array(sumArr.flatten())[0] + 1e-7
+        diag = np.power(diag, -0.5)
+        D = sp.diags(diag)
+        L = D * A * D
+
+        # Convert to tensor
+        L = sp.coo_matrix(L)
+        row = L.row
+        col = L.col
+        i = torch.LongTensor(np.array([row, col]))
+        data = torch.FloatTensor(L.data)
+        modified_adj_matrix = torch.sparse.FloatTensor(i, data, torch.Size(L.shape))
+
+        return modified_adj_matrix
+
+    @contextmanager
+    def _temporarily_replace_graph(self, model, graph_attr_name, modified_graph):
+        """
+        Context manager to temporarily replace the model's adjacency matrix.
+
+        This allows us to compute gradients with a modified graph structure
+        (e.g., without forget edges) and then restore the original graph.
+
+        Args:
+            model: The recommendation model
+            graph_attr_name: Name of the graph attribute to replace
+            modified_graph: The modified adjacency matrix
+
+        Usage:
+            with self._temporarily_replace_graph(model, 'norm_adj_matrix', modified_adj):
+                # Forward pass and gradient computation happens here
+                # The model uses modified_adj instead of the original
+                pass
+            # Original graph is automatically restored here
+        """
+        # Save the original graph
+        original_graph = getattr(model, graph_attr_name)
+
+        try:
+            # Replace with modified graph (move to same device)
+            setattr(model, graph_attr_name, modified_graph.to(model.device))
+            print(f"[GIF] Temporarily replaced {graph_attr_name} with modified graph (forget edges excluded)")
+            yield
+        finally:
+            # Restore original graph
+            setattr(model, graph_attr_name, original_graph)
+            print(f"[GIF] Restored original {graph_attr_name}")
+
     def gif(
         self,
         epoch_idx,
@@ -1230,22 +1419,56 @@ class Trainer(AbstractTrainer):
         # Use k-hop neighbors for gradients on remaining graph (after unlearning)
         influenced_remaining_count = len(k_hop_batches) if k_hop_batches else influenced_sample_count
 
-        for batch in k_hop_batches:
-            batch = batch.to(self.device)
+        # Check if model has graph structure that needs modification
+        has_graph, graph_attr_name = self._model_has_graph_structure(self.model)
 
-            cur_grads_remaining = self._batch_grad(
+        if has_graph:
+            print(f"[GIF] Model has graph structure ({graph_attr_name}). Building modified adjacency matrix...")
+            # Build modified adjacency matrix without forget edges
+            modified_adj_matrix = self._build_modified_adj_matrix(
                 self.model,
-                batch,
-                param_list,
-                loss_func,
-                average_scale=influenced_remaining_count,
+                forget_data,
+                retain_train_data.dataset
             )
 
-            if len(grads_influenced_remaining) == 0:
-                grads_influenced_remaining = [g for g in cur_grads_remaining]
-            else:
-                for i in range(len(cur_grads_remaining)):
-                    grads_influenced_remaining[i] += cur_grads_remaining[i]
+            # Use context manager to temporarily replace the graph during gradient computation
+            with self._temporarily_replace_graph(self.model, graph_attr_name, modified_adj_matrix):
+                # Compute gradients on remaining graph (WITHOUT forget edges)
+                for batch in k_hop_batches:
+                    batch = batch.to(self.device)
+
+                    cur_grads_remaining = self._batch_grad(
+                        self.model,
+                        batch,
+                        param_list,
+                        loss_func,
+                        average_scale=influenced_remaining_count,
+                    )
+
+                    if len(grads_influenced_remaining) == 0:
+                        grads_influenced_remaining = [g for g in cur_grads_remaining]
+                    else:
+                        for i in range(len(cur_grads_remaining)):
+                            grads_influenced_remaining[i] += cur_grads_remaining[i]
+        else:
+            print(f"[GIF] Model has no graph structure. Computing gradients normally...")
+            # For models without graph structure (e.g., BPR), compute normally
+            for batch in k_hop_batches:
+                batch = batch.to(self.device)
+
+                cur_grads_remaining = self._batch_grad(
+                    self.model,
+                    batch,
+                    param_list,
+                    loss_func,
+                    average_scale=influenced_remaining_count,
+                )
+
+                if len(grads_influenced_remaining) == 0:
+                    grads_influenced_remaining = [g for g in cur_grads_remaining]
+                else:
+                    for i in range(len(cur_grads_remaining)):
+                        grads_influenced_remaining[i] += cur_grads_remaining[i]
 
         # Step 3: Compute total gradient change (delta_L in the paper)
         # delta_L = L(forget) + L(influenced_original) - L(influenced_remaining)
