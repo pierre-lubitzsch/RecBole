@@ -195,14 +195,15 @@ def main():
 
     write_dataset(forget_set, forget_file, header)
 
+    user_count, item_count = len(set(line.split('\t')[0] for line in forget_set)), len(set(line.split('\t')[2] for line in forget_set))
     # Print summary
     print("\n" + "="*60)
     print("SUMMARY")
     print("="*60)
     print(f"Original dataset: {total_count} interactions")
     print(f"Forget set: {len(forget_set)} interactions ({len(forget_set)/total_count*100:.3f}%)")
-    print(f"Forget set users: {len(set(line.split('\t')[0] for line in forget_set))}")
-    print(f"Forget set items: {len(set(line.split('\t')[2] for line in forget_set))}")
+    print(f"Forget set users: {user_count}")
+    print(f"Forget set items: {item_count}")
     print(f"\nOutput file:")
     print(f"  - {forget_file}")
     print("="*60)
