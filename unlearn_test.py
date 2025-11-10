@@ -204,6 +204,11 @@ def main():
         help="number of hops for influenced neighbors in GIF (k-hop neighborhood)",
     )
     parser.add_argument(
+        "--gif_use_true_khop",
+        action="store_true",
+        help="use true k-hop neighbor computation instead of random sampling (default: True for sparse graphs)",
+    )
+    parser.add_argument(
         "--gif_retain_samples",
         type=int,
         default=None,
@@ -348,6 +353,7 @@ def main():
         "gif_scale_factor": args.gif_scale_factor,
         "gif_iterations": args.gif_iterations,
         "gif_k_hops": args.gif_k_hops,
+        "gif_use_true_khop": args.gif_use_true_khop,
         "ceu_lambda": args.ceu_lambda,
         "ceu_sigma": args.ceu_sigma,
         "ceu_epsilon": args.ceu_epsilon,

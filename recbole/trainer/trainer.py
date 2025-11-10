@@ -937,6 +937,142 @@ class Trainer(AbstractTrainer):
 
         return total_loss
 
+    def _build_user_item_sparse_matrix(self, dataset):
+        """
+        Build a sparse user-item interaction matrix from the dataset.
+
+        Args:
+            dataset: RecBole dataset object
+
+        Returns:
+            scipy.sparse.csr_matrix: Sparse matrix of shape (n_users, n_items)
+                where matrix[u, i] = 1 if user u interacted with item i
+        """
+        import scipy.sparse as sp
+
+        # Get interaction data
+        inter_feat = dataset.inter_feat
+        user_ids = inter_feat[dataset.uid_field].numpy()
+        item_ids = inter_feat[dataset.iid_field].numpy()
+
+        # Create sparse matrix
+        n_users = dataset.user_num
+        n_items = dataset.item_num
+
+        # Create data array (all ones for interactions)
+        data = np.ones(len(user_ids))
+
+        # Build sparse matrix
+        matrix = sp.csr_matrix(
+            (data, (user_ids, item_ids)),
+            shape=(n_users, n_items)
+        )
+
+        return matrix
+
+    def _get_k_hop_neighbors(self, user_ids, user_item_matrix, k=2, max_neighbors=10000):
+        """
+        Get users who are within k-hops of the target users in user-item bipartite graph.
+        Uses hybrid approach: finds true k-hop neighbors but caps the size.
+
+        Args:
+            user_ids: List/array of user IDs to find neighbors for
+            user_item_matrix: Sparse user-item interaction matrix (n_users x n_items)
+            k: Number of hops (default: 2)
+            max_neighbors: Maximum number of neighbors to return (for large graphs)
+
+        Returns:
+            set: Set of user IDs within k-hops (excluding input users)
+        """
+        influenced_users = set()
+        input_users = set(user_ids)
+
+        # Convert to list if needed
+        if not isinstance(user_ids, (list, tuple, np.ndarray)):
+            user_ids = [user_ids]
+
+        # Get items that target users interacted with (1-hop)
+        target_items = set()
+        for user_id in user_ids:
+            if user_id < user_item_matrix.shape[0]:
+                user_items = user_item_matrix[user_id].nonzero()[1]
+                target_items.update(user_items)
+
+        if k >= 1:
+            # 2-hop: Get other users who interacted with those items
+            for item_id in target_items:
+                if item_id < user_item_matrix.shape[1]:
+                    other_users = user_item_matrix[:, item_id].nonzero()[0]
+                    influenced_users.update(other_users)
+
+        if k >= 2:
+            # 3-hop: Get items those users interacted with
+            hop_2_items = set()
+            for neighbor_user in list(influenced_users):
+                if neighbor_user not in input_users and neighbor_user < user_item_matrix.shape[0]:
+                    neighbor_items = user_item_matrix[neighbor_user].nonzero()[1]
+                    hop_2_items.update(neighbor_items)
+
+            # 4-hop: Get users who interacted with those items
+            for item_id in hop_2_items:
+                if item_id < user_item_matrix.shape[1]:
+                    other_users = user_item_matrix[:, item_id].nonzero()[0]
+                    influenced_users.update(other_users)
+
+        # Remove the original users
+        influenced_users -= input_users
+
+        # Hybrid approach: if too many neighbors, sample randomly from them
+        if len(influenced_users) > max_neighbors:
+            print(f"[GIF] Found {len(influenced_users)} k-hop neighbors, sampling {max_neighbors}")
+            influenced_users = set(np.random.choice(
+                list(influenced_users),
+                size=max_neighbors,
+                replace=False
+            ))
+
+        return influenced_users
+
+    def _filter_retain_data_by_users(self, retain_train_data, target_user_ids, max_samples=None):
+        """
+        Filter retain training data to only include interactions from specific users.
+
+        Args:
+            retain_train_data: DataLoader with retain data
+            target_user_ids: Set of user IDs to keep
+            max_samples: Optional maximum number of samples to return
+
+        Returns:
+            List of batches containing only target users' interactions
+        """
+        filtered_batches = []
+        total_samples = 0
+
+        for batch in retain_train_data:
+            # Get user IDs from batch
+            user_ids = batch[retain_train_data.dataset.uid_field].numpy()
+
+            # Find which samples belong to target users
+            mask = np.isin(user_ids, list(target_user_ids))
+
+            if mask.any():
+                # Filter the batch to only include target users
+                filtered_batch = {}
+                for key, value in batch.items():
+                    if isinstance(value, torch.Tensor):
+                        filtered_batch[key] = value[mask]
+                    else:
+                        filtered_batch[key] = value
+
+                if len(filtered_batch[retain_train_data.dataset.uid_field]) > 0:
+                    filtered_batches.append(filtered_batch)
+                    total_samples += len(filtered_batch[retain_train_data.dataset.uid_field])
+
+                    if max_samples and total_samples >= max_samples:
+                        break
+
+        return filtered_batches
+
     def gif(
         self,
         epoch_idx,
@@ -954,6 +1090,7 @@ class Trainer(AbstractTrainer):
         gif_scale_factor=1000,
         gif_iterations=100,
         gif_k_hops=2,
+        gif_use_true_khop=False,
         param_list=None,
     ):
         """
@@ -1014,14 +1151,60 @@ class Trainer(AbstractTrainer):
         # This is the key difference from traditional influence functions
         print(f"[GIF] Step 2: Computing gradients for {gif_k_hops}-hop influenced neighbors...")
 
-        # Get influenced neighbors by running forward pass on forget data with modified graph
-        # In practice, for node unlearning in recommender systems, the "influenced neighbors"
-        # are the retain users/items that interacted with the forget nodes
+        if gif_use_true_khop:
+            # NEW: Use true k-hop neighbor computation (recommended for sparse graphs)
+            # Build user-item sparse matrix for k-hop computation
+            print(f"[GIF] Building user-item interaction matrix...")
+            user_item_matrix = self._build_user_item_sparse_matrix(retain_train_data.dataset)
+
+            # Extract user IDs from forget data
+            forget_user_ids = set()
+            for batch in forget_data:
+                user_ids = batch[forget_data.dataset.uid_field].numpy()
+                forget_user_ids.update(user_ids)
+
+            print(f"[GIF] Finding {gif_k_hops}-hop neighbors for {len(forget_user_ids)} forget users...")
+
+            # Get true k-hop neighbors (hybrid approach with max cap)
+            k_hop_neighbor_ids = self._get_k_hop_neighbors(
+                list(forget_user_ids),
+                user_item_matrix,
+                k=gif_k_hops,
+                max_neighbors=min(10000, retain_samples_used_for_update * 10)  # Cap at 10x retain samples
+            )
+
+            print(f"[GIF] Found {len(k_hop_neighbor_ids)} users in {gif_k_hops}-hop neighborhood")
+
+            # Filter retain data to only k-hop neighbors
+            if len(k_hop_neighbor_ids) > 0:
+                # Get batches containing only k-hop neighbors
+                k_hop_batches = self._filter_retain_data_by_users(
+                    retain_train_data,
+                    k_hop_neighbor_ids,
+                    max_samples=retain_samples_used_for_update
+                )
+                print(f"[GIF] Filtered to {len(k_hop_batches)} batches with k-hop neighbor interactions")
+            else:
+                print(f"[GIF] Warning: No k-hop neighbors found, using full retain data")
+                k_hop_batches = []
+                for batch_idx, batch in enumerate(retain_train_data):
+                    if batch_idx * retain_train_data.batch_size >= retain_samples_used_for_update:
+                        break
+                    k_hop_batches.append(batch)
+        else:
+            # OLD: Random sampling from retain data (default for backward compatibility)
+            print(f"[GIF] Using random sampling for k-hop approximation (set --gif_use_true_khop for true k-hop)")
+            k_hop_batches = []
+            for batch_idx, batch in enumerate(retain_train_data):
+                if batch_idx * retain_train_data.batch_size >= retain_samples_used_for_update:
+                    break
+                k_hop_batches.append(batch)
+
+        # Compute gradients on k-hop neighbors (influenced region on remaining graph)
         grads_influenced_original = []
         grads_influenced_remaining = []
 
-        # Use clean_forget_data and retain_train_data to approximate influenced region
-        # clean_forget_data represents the "neighbors" that are retained but influenced
+        # Use clean_forget_data for gradients on original graph (neighbors that included forget users)
         influenced_sample_count = min(len(clean_forget_data.dataset), retain_samples_used_for_update)
 
         for batch_idx, interaction in enumerate(clean_forget_data):
@@ -1044,18 +1227,15 @@ class Trainer(AbstractTrainer):
                 for i in range(len(cur_grads_original)):
                     grads_influenced_original[i] += cur_grads_original[i]
 
-        # For influenced neighbors on remaining graph, we need to simulate the graph after deletion
-        # In practice, we approximate this by using a subset of retain data
-        influenced_remaining_count = min(len(retain_train_data.dataset), influenced_sample_count)
+        # Use k-hop neighbors for gradients on remaining graph (after unlearning)
+        influenced_remaining_count = len(k_hop_batches) if k_hop_batches else influenced_sample_count
 
-        for batch_idx, interaction in enumerate(retain_train_data):
-            if batch_idx * retain_train_data.batch_size >= influenced_remaining_count:
-                break
-            interaction = interaction.to(self.device)
+        for batch in k_hop_batches:
+            batch = batch.to(self.device)
 
             cur_grads_remaining = self._batch_grad(
                 self.model,
-                interaction,
+                batch,
                 param_list,
                 loss_func,
                 average_scale=influenced_remaining_count,
@@ -2273,6 +2453,12 @@ class Trainer(AbstractTrainer):
         retrain_checkpoint_idx_to_match=None,
         task_type="SBR",
         damping=0.01,
+        gif_damping=0.01,
+        gif_scale_factor=1000,
+        gif_iterations=100,
+        gif_k_hops=2,
+        gif_use_true_khop=False,
+        gif_retain_samples=None,
         ceu_lambda=0.01,
         ceu_sigma=0.1,
         ceu_epsilon=0.1,
@@ -2362,9 +2548,9 @@ class Trainer(AbstractTrainer):
             # Default hyperparameters from the paper
             gif_damping = self.config["gif_damping"] if "gif_damping" in self.config else 0.01
             gif_scale_factor = self.config["gif_scale_factor"] if "gif_scale_factor" in self.config else 1000
-            gif_iterations = self.config["gif_iterations"] if "gif_iterations" in self.config else 100
-            gif_k_hops = self.config["gif_k_hops"] if "gif_k_hops" in self.config else 2
-            retain_samples_used_for_update = self.config["gif_retain_samples"] if "gif_retain_samples" in self.config else 128 * len(forget_data.dataset)
+            gif_iterations = gif_iterations if gif_iterations is not None else (self.config["gif_iterations"] if "gif_iterations" in self.config else 100)
+            gif_k_hops = gif_k_hops if gif_k_hops is not None else (self.config["gif_k_hops"] if "gif_k_hops" in self.config else 2)
+            retain_samples_used_for_update = gif_retain_samples if gif_retain_samples is not None else (self.config["gif_retain_samples"] if "gif_retain_samples" in self.config else 128 * len(forget_data.dataset))
 
             param_list = [p for _, p in self.model.named_parameters()]
             self.gif(
@@ -2383,6 +2569,7 @@ class Trainer(AbstractTrainer):
                 gif_scale_factor=gif_scale_factor,
                 gif_iterations=gif_iterations,
                 gif_k_hops=gif_k_hops,
+                gif_use_true_khop=gif_use_true_khop,
                 param_list=param_list,
             )
         elif unlearning_algorithm == "ceu":
