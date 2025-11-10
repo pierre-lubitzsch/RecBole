@@ -154,7 +154,7 @@ class Trainer(AbstractTrainer):
             if "rmia_out_model_flag" in config and config["rmia_out_model_flag"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_rmia_out_model_partition_idx_{config['rmia_out_model_partition_idx']}.pth"
             # unlearning
-            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin", "gif"]:
+            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin", "gif", "ceu"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_algorithm_{config['unlearning_algorithm']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
             # retraining
             elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
