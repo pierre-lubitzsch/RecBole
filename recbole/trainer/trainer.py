@@ -580,7 +580,7 @@ class Trainer(AbstractTrainer):
             else:                       # embeddings, biases, ...
                 new_p.normal_(0, 0.02)
 
-            # overwrite only the “low-grad” slots
+            # overwrite only the "low-grad" slots
             p.data = p.data.to(self.device)
             p.data[mask] = new_p[mask]
 
@@ -1066,9 +1066,9 @@ class Trainer(AbstractTrainer):
                 for i in range(len(cur_grads_remaining)):
                     grads_influenced_remaining[i] += cur_grads_remaining[i]
 
-        # Step 3: Compute total gradient change (ΔL in the paper)
-        # ΔL = L(forget) + L(influenced_original) - L(influenced_remaining)
-        print(f"[GIF] Step 3: Computing total gradient change (ΔL)...")
+        # Step 3: Compute total gradient change (delta_L in the paper)
+        # delta_L = L(forget) + L(influenced_original) - L(influenced_remaining)
+        print(f"[GIF] Step 3: Computing total gradient change (delta_L)...")
         delta_grads = []
         for i in range(len(param_list)):
             # Add forget gradients
@@ -1116,11 +1116,11 @@ class Trainer(AbstractTrainer):
             return hvp_acc
 
         # Step 5: Compute H^{-1} * delta_grads using iterative approximation (Theorem 5)
-        # H^{-1} = sum_{i=0}^{inf} (I - λH)^i
-        # Recursion: H^{-1}_t * v = v + H^{-1}_{t-1} * v - λH * H^{-1}_{t-1} * v
+        # H^{-1} = sum_{i=0}^{inf} (I - lambda*H)^i
+        # Recursion: H^{-1}_t * v = v + H^{-1}_{t-1} * v - lambda*H * H^{-1}_{t-1} * v
         print(f"[GIF] Step 5: Computing inverse Hessian approximation (Neumann series)...")
 
-        # Scale lambda to ensure convergence (spectral radius of (I - λH) < 1)
+        # Scale lambda to ensure convergence (spectral radius of (I - lambda*H) < 1)
         lambda_scaled = gif_damping / gif_scale_factor
 
         # Initialize: H^{-1}_0 * v = v
@@ -1130,7 +1130,7 @@ class Trainer(AbstractTrainer):
             # Compute H * H^{-1}_{t-1} * v
             h_times_h_inv_v = compute_hvp(h_inv_v)
 
-            # Update: H^{-1}_t * v = v + H^{-1}_{t-1} * v - λH * H^{-1}_{t-1} * v
+            # Update: H^{-1}_t * v = v + H^{-1}_{t-1} * v - lambda*H * H^{-1}_{t-1} * v
             new_h_inv_v = []
             for i in range(len(param_list)):
                 new_val = delta_grads[i] + h_inv_v[i] - lambda_scaled * h_times_h_inv_v[i]
@@ -1143,7 +1143,7 @@ class Trainer(AbstractTrainer):
 
             h_inv_v = new_h_inv_v
 
-        # Step 6: Apply parameter update: θ_new = θ_old + H^{-1} * ΔL
+        # Step 6: Apply parameter update: theta_new = theta_old + H^{-1} * delta_L
         print(f"[GIF] Step 6: Applying parameter updates...")
         with torch.no_grad():
             for p, delta_p in zip(param_list, h_inv_v):
@@ -1635,7 +1635,7 @@ class Trainer(AbstractTrainer):
 
         # --- initialisation ------------------------------------------------------
         x      = [torch.zeros_like(v) for v in v_list]   # x_theta
-        r      = [v.clone() for v in v_list]             # r_theta = v − H x_theta  (H x_theta = 0)
+        r      = [v.clone() for v in v_list]             # r_theta = v - H x_theta  (H x_theta = 0)
         p      = [ri.clone() for ri in r]                # p_theta = r_theta
         rs_old = self._dot_list(r, r).item()
 
@@ -1679,7 +1679,7 @@ class Trainer(AbstractTrainer):
 
                 # Check for NaN/Inf in dot product
                 if math.isnan(pq_dot) or math.isinf(pq_dot):
-                    self.logger.warning(f"[CG] NaN or Inf detected in p·q dot product at clean_forget iteration {i // bs}")
+                    self.logger.warning(f"[CG] NaN or Inf detected in p*q dot product at clean_forget iteration {i // bs}")
                     break
 
                 alpha = rs_old / pq_dot
@@ -1687,7 +1687,7 @@ class Trainer(AbstractTrainer):
                 # x_{k+1}  =  x_k + alpha p_k
                 x = self._add_scaled(x, p, alpha)
 
-                # r_{k+1}  =  r_k − alpha q
+                # r_{k+1}  =  r_k - alpha q
                 r = self._add_scaled(r, q, -alpha)
 
                 rs_new = self._dot_list(r, r).item()
@@ -1737,7 +1737,7 @@ class Trainer(AbstractTrainer):
 
                 # Check for NaN/Inf in dot product
                 if math.isnan(pq_dot) or math.isinf(pq_dot):
-                    self.logger.warning(f"[CG] NaN or Inf detected in p·q dot product at retain_train iteration {i // bs}")
+                    self.logger.warning(f"[CG] NaN or Inf detected in p*q dot product at retain_train iteration {i // bs}")
                     break
 
                 alpha = rs_old / pq_dot
@@ -1745,7 +1745,7 @@ class Trainer(AbstractTrainer):
                 # x_{k+1}  =  x_k + alpha p_k
                 x = self._add_scaled(x, p, alpha)
 
-                # r_{k+1}  =  r_k − alpha q
+                # r_{k+1}  =  r_k - alpha q
                 r = self._add_scaled(r, q, -alpha)
 
                 rs_new = self._dot_list(r, r).item()
