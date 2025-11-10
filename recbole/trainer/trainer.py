@@ -2813,13 +2813,7 @@ class Trainer(AbstractTrainer):
             )
         elif unlearning_algorithm == "gif":
             # GIF: Graph Influence Function
-            # Default hyperparameters from the paper
-            gif_damping = self.config["gif_damping"] if "gif_damping" in self.config else 0.01
-            gif_scale_factor = self.config["gif_scale_factor"] if "gif_scale_factor" in self.config else 1000
-            gif_iterations = gif_iterations if gif_iterations is not None else (self.config["gif_iterations"] if "gif_iterations" in self.config else 100)
-            gif_k_hops = gif_k_hops if gif_k_hops is not None else (self.config["gif_k_hops"] if "gif_k_hops" in self.config else 2)
-            retain_samples_used_for_update = gif_retain_samples if gif_retain_samples is not None else (self.config["gif_retain_samples"] if "gif_retain_samples" in self.config else 128 * len(forget_data.dataset))
-
+            # Read all parameters directly from config
             param_list = [p for _, p in self.model.named_parameters()]
             self.gif(
                 epoch_idx,
@@ -2832,17 +2826,17 @@ class Trainer(AbstractTrainer):
                 unlearned_users_before=unlearned_users_before,
                 saved=saved,
                 verbose=verbose,
-                retain_samples_used_for_update=retain_samples_used_for_update,
-                gif_damping=gif_damping,
-                gif_scale_factor=gif_scale_factor,
-                gif_iterations=gif_iterations,
-                gif_k_hops=gif_k_hops,
-                gif_use_true_khop=gif_use_true_khop,
+                retain_samples_used_for_update=self.config["gif_retain_samples"] if "gif_retain_samples" in self.config and self.config["gif_retain_samples"] is not None else 128 * len(forget_data.dataset),
+                gif_damping=self.config["gif_damping"] if "gif_damping" in self.config and self.config["gif_damping"] is not None else 0.01,
+                gif_scale_factor=self.config["gif_scale_factor"] if "gif_scale_factor" in self.config and self.config["gif_scale_factor"] is not None else 1000,
+                gif_iterations=self.config["gif_iterations"] if "gif_iterations" in self.config and self.config["gif_iterations"] is not None else 100,
+                gif_k_hops=self.config["gif_k_hops"] if "gif_k_hops" in self.config and self.config["gif_k_hops"] is not None else 2,
+                gif_use_true_khop=self.config["gif_use_true_khop"] if "gif_use_true_khop" in self.config and self.config["gif_use_true_khop"] is not None else False,
                 param_list=param_list,
             )
         elif unlearning_algorithm == "ceu":
             # CEU: Certified Edge Unlearning
-            # Default hyperparameters from the paper
+            # Read all parameters directly from config
             param_list = [p for _, p in self.model.named_parameters()]
             self.ceu(
                 epoch_idx,
@@ -2855,16 +2849,16 @@ class Trainer(AbstractTrainer):
                 unlearned_users_before=unlearned_users_before,
                 saved=saved,
                 verbose=verbose,
-                ceu_lambda=ceu_lambda,
-                ceu_sigma=ceu_sigma,
-                ceu_epsilon=ceu_epsilon,
-                ceu_cg_iterations=ceu_cg_iterations,
-                ceu_hessian_samples=ceu_hessian_samples,
+                ceu_lambda=self.config["ceu_lambda"] if "ceu_lambda" in self.config and self.config["ceu_lambda"] is not None else 0.01,
+                ceu_sigma=self.config["ceu_sigma"] if "ceu_sigma" in self.config and self.config["ceu_sigma"] is not None else 0.1,
+                ceu_epsilon=self.config["ceu_epsilon"] if "ceu_epsilon" in self.config and self.config["ceu_epsilon"] is not None else 0.1,
+                ceu_cg_iterations=self.config["ceu_cg_iterations"] if "ceu_cg_iterations" in self.config and self.config["ceu_cg_iterations"] is not None else 100,
+                ceu_hessian_samples=self.config["ceu_hessian_samples"] if "ceu_hessian_samples" in self.config and self.config["ceu_hessian_samples"] is not None else 1024,
                 param_list=param_list,
             )
         elif unlearning_algorithm == "idea":
             # IDEA: Flexible Framework of Certified Unlearning for GNNs
-            # Default hyperparameters from the paper
+            # Read all parameters directly from config
             param_list = [p for _, p in self.model.named_parameters()]
             self.idea(
                 epoch_idx,
@@ -2877,12 +2871,12 @@ class Trainer(AbstractTrainer):
                 unlearned_users_before=unlearned_users_before,
                 saved=saved,
                 verbose=verbose,
-                idea_damping=idea_damping,
-                idea_sigma=idea_sigma,
-                idea_epsilon=idea_epsilon,
-                idea_delta=idea_delta,
-                idea_iterations=idea_iterations,
-                idea_hessian_samples=idea_hessian_samples,
+                idea_damping=self.config["idea_damping"] if "idea_damping" in self.config and self.config["idea_damping"] is not None else 0.01,
+                idea_sigma=self.config["idea_sigma"] if "idea_sigma" in self.config and self.config["idea_sigma"] is not None else 0.1,
+                idea_epsilon=self.config["idea_epsilon"] if "idea_epsilon" in self.config and self.config["idea_epsilon"] is not None else 0.1,
+                idea_delta=self.config["idea_delta"] if "idea_delta" in self.config and self.config["idea_delta"] is not None else 0.01,
+                idea_iterations=self.config["idea_iterations"] if "idea_iterations" in self.config and self.config["idea_iterations"] is not None else 100,
+                idea_hessian_samples=self.config["idea_hessian_samples"] if "idea_hessian_samples" in self.config and self.config["idea_hessian_samples"] is not None else 1024,
                 param_list=param_list,
             )
 
