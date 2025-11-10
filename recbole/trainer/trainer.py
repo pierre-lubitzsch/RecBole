@@ -1046,12 +1046,7 @@ class Trainer(AbstractTrainer):
         for user_id in user_ids:
             if user_id < user_item_csr.shape[0]:
                 user_items = user_item_csr[user_id].nonzero()[1]
-                print(f"[GIF DEBUG] User {user_id} has {len(user_items)} items in original matrix")
                 target_items.update(user_items)
-            else:
-                print(f"[GIF DEBUG] User {user_id} is out of bounds (matrix shape: {user_item_csr.shape})")
-
-        print(f"[GIF DEBUG] Found {len(target_items)} total items for forget users")
 
         # 2-hop: Get users who interacted with those items (this will include the forget user)
         if k >= 2:
@@ -1060,10 +1055,7 @@ class Trainer(AbstractTrainer):
             for item_id in target_items:
                 if item_id < user_item_csc.shape[1]:
                     other_users = user_item_csc[:, item_id].nonzero()[0]
-                    print(f"[GIF DEBUG] Item {item_id} has {len(other_users)} users who interacted with it")
                     influenced_users.update(other_users)
-
-            print(f"[GIF DEBUG] After finding 2-hop users (who interact with same items): {len(influenced_users)} users (includes forget user)")
 
         # 4-hop: Expand to users 4-hops away
         if k >= 4:
