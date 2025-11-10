@@ -971,6 +971,48 @@ class Trainer(AbstractTrainer):
 
         return matrix
 
+    def _build_original_user_item_matrix(self, retain_dataset, forget_dataset):
+        """
+        Build a sparse user-item matrix from the ORIGINAL data (retain + forget).
+
+        This is needed for k-hop neighbor computation where we need to find neighbors
+        based on the original graph structure before unlearning.
+
+        Args:
+            retain_dataset: Dataset with retain interactions
+            forget_dataset: Dataset with forget interactions
+
+        Returns:
+            scipy.sparse.csr_matrix: Sparse matrix of shape (n_users, n_items)
+        """
+        import scipy.sparse as sp
+
+        # Get retain interactions
+        retain_inter_feat = retain_dataset.inter_feat
+        retain_users = retain_inter_feat[retain_dataset.uid_field].numpy()
+        retain_items = retain_inter_feat[retain_dataset.iid_field].numpy()
+
+        # Get forget interactions
+        forget_inter_feat = forget_dataset.inter_feat
+        forget_users = forget_inter_feat[forget_dataset.uid_field].numpy()
+        forget_items = forget_inter_feat[forget_dataset.iid_field].numpy()
+
+        # Combine to get original interactions
+        all_users = np.concatenate([retain_users, forget_users])
+        all_items = np.concatenate([retain_items, forget_items])
+
+        n_users = retain_dataset.user_num
+        n_items = retain_dataset.item_num
+        data = np.ones(len(all_users))
+
+        # Build sparse matrix
+        matrix = sp.csr_matrix(
+            (data, (all_users, all_items)),
+            shape=(n_users, n_items)
+        )
+
+        return matrix
+
     def _get_k_hop_neighbors(self, user_ids, user_item_matrix, k=2, max_neighbors=10000):
         """
         Get users who are within k-hops of the target users in user-item bipartite graph.
@@ -1102,7 +1144,7 @@ class Trainer(AbstractTrainer):
         # No graph structure found
         return False, None
 
-    def _build_modified_adj_matrix(self, model, forget_data, dataset):
+    def _build_modified_adj_matrix(self, model, forget_data, retain_dataset, forget_dataset):
         """
         Build a modified adjacency matrix with forget edges removed.
 
@@ -1113,7 +1155,8 @@ class Trainer(AbstractTrainer):
         Args:
             model: The recommendation model
             forget_data: DataLoader containing edges to remove
-            dataset: The dataset object
+            retain_dataset: Dataset with retain interactions (without forget edges)
+            forget_dataset: Dataset with forget interactions
 
         Returns:
             torch.sparse.FloatTensor: Modified adjacency matrix without forget edges
@@ -1125,30 +1168,40 @@ class Trainer(AbstractTrainer):
         forget_items = []
 
         for batch in forget_data:
-            users = batch[dataset.uid_field].cpu().numpy()
-            items = batch[dataset.iid_field].cpu().numpy()
+            users = batch[forget_dataset.uid_field].cpu().numpy()
+            items = batch[forget_dataset.iid_field].cpu().numpy()
             forget_users.extend(users)
             forget_items.extend(items)
 
         forget_edges = set(zip(forget_users, forget_items))
         print(f"[GIF] Building modified adjacency matrix excluding {len(forget_edges)} forget edges...")
 
-        # Get the original interaction matrix from dataset
-        # This should be the same matrix used to build the original adj matrix
-        if hasattr(dataset, 'inter_matrix'):
-            interaction_matrix = dataset.inter_matrix(form='coo').astype(np.float32)
-        else:
-            # Fallback: build from inter_feat
-            inter_feat = dataset.inter_feat
-            user_ids = inter_feat[dataset.uid_field].numpy()
-            item_ids = inter_feat[dataset.iid_field].numpy()
-            n_users = dataset.user_num
-            n_items = dataset.item_num
-            data = np.ones(len(user_ids))
-            interaction_matrix = sp.coo_matrix(
-                (data, (user_ids, item_ids)),
-                shape=(n_users, n_items)
-            ).astype(np.float32)
+        # Build the ORIGINAL interaction matrix by combining retain + forget
+        # We need the original graph (before unlearning) to properly remove forget edges
+        import pandas as pd
+
+        # Get retain interactions
+        retain_inter_feat = retain_dataset.inter_feat
+        retain_users = retain_inter_feat[retain_dataset.uid_field].numpy()
+        retain_items = retain_inter_feat[retain_dataset.iid_field].numpy()
+
+        # Get forget interactions
+        forget_inter_feat = forget_dataset.inter_feat
+        forget_users_all = forget_inter_feat[forget_dataset.uid_field].numpy()
+        forget_items_all = forget_inter_feat[forget_dataset.iid_field].numpy()
+
+        # Combine to get original interactions
+        all_users = np.concatenate([retain_users, forget_users_all])
+        all_items = np.concatenate([retain_items, forget_items_all])
+
+        n_users = retain_dataset.user_num
+        n_items = retain_dataset.item_num
+        data = np.ones(len(all_users))
+
+        interaction_matrix = sp.coo_matrix(
+            (data, (all_users, all_items)),
+            shape=(n_users, n_items)
+        ).astype(np.float32)
 
         # Remove forget edges from interaction matrix
         # Convert to lists for filtering
@@ -1343,8 +1396,9 @@ class Trainer(AbstractTrainer):
         if gif_use_true_khop:
             # NEW: Use true k-hop neighbor computation (recommended for sparse graphs)
             # Build user-item sparse matrix for k-hop computation
-            print(f"[GIF] Building user-item interaction matrix...")
-            user_item_matrix = self._build_user_item_sparse_matrix(retain_train_data.dataset)
+            # IMPORTANT: Need the ORIGINAL graph (retain + forget) to find k-hop neighbors
+            print(f"[GIF] Building user-item interaction matrix from original data...")
+            user_item_matrix = self._build_original_user_item_matrix(retain_train_data.dataset, forget_data.dataset)
 
             # Extract user IDs from forget data
             forget_user_ids = set()
@@ -1433,7 +1487,8 @@ class Trainer(AbstractTrainer):
             modified_adj_matrix = self._build_modified_adj_matrix(
                 self.model,
                 forget_data,
-                retain_train_data.dataset
+                retain_train_data.dataset,
+                forget_data.dataset
             )
 
             # Use context manager to temporarily replace the graph during gradient computation
@@ -1687,7 +1742,8 @@ class Trainer(AbstractTrainer):
             modified_adj_matrix = self._build_modified_adj_matrix(
                 self.model,
                 forget_data,
-                retain_train_data.dataset
+                retain_train_data.dataset,
+                clean_forget_data.dataset
             )
 
             # Use context manager to temporarily replace the graph during gradient computation
