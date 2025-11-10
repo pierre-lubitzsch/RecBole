@@ -1389,25 +1389,30 @@ class Trainer(AbstractTrainer):
                     break
                 k_hop_batches.append(batch)
 
-        # Compute gradients on k-hop neighbors (influenced region on remaining graph)
+        # Compute gradients on k-hop neighbors (influenced region)
         grads_influenced_original = []
         grads_influenced_remaining = []
 
-        # Use clean_forget_data for gradients on original graph (neighbors that included forget users)
-        influenced_sample_count = min(len(clean_forget_data.dataset), retain_samples_used_for_update)
+        # IMPORTANT: According to GIF paper Algorithm 1, we need:
+        # - grads_influenced_original: Gradients on k-hop neighbors using ORIGINAL graph (with forget edges)
+        # - grads_influenced_remaining: Gradients on k-hop neighbors using REMAINING graph (without forget edges)
+        # This computes δL = ∇L_D_f + ∇L_N_G - ∇L_N_G'
 
-        for batch_idx, interaction in enumerate(clean_forget_data):
-            if batch_idx * clean_forget_data.batch_size >= influenced_sample_count:
-                break
-            interaction = interaction.to(self.device)
+        # First, compute grads_influenced_original on k-hop neighbors with ORIGINAL graph
+        print(f"[GIF] Computing gradients on k-hop neighbors with ORIGINAL graph...")
+        influenced_count = len(k_hop_batches) if k_hop_batches else 1
 
-            # Gradient with original graph (before unlearning)
+        for batch in k_hop_batches:
+            batch = batch.to(self.device)
+
+            # Gradient with ORIGINAL graph (before unlearning, forget edges still present)
+            # This corresponds to ∇L_N_G in the paper
             cur_grads_original = self._batch_grad(
                 self.model,
-                interaction,
+                batch,
                 param_list,
                 loss_func,
-                average_scale=influenced_sample_count,
+                average_scale=influenced_count,
             )
 
             if len(grads_influenced_original) == 0:
@@ -1416,8 +1421,8 @@ class Trainer(AbstractTrainer):
                 for i in range(len(cur_grads_original)):
                     grads_influenced_original[i] += cur_grads_original[i]
 
-        # Use k-hop neighbors for gradients on remaining graph (after unlearning)
-        influenced_remaining_count = len(k_hop_batches) if k_hop_batches else influenced_sample_count
+        # Now compute grads_influenced_remaining on k-hop neighbors with REMAINING graph (modified)
+        print(f"[GIF] Computing gradients on k-hop neighbors with REMAINING graph (forget edges excluded)...")
 
         # Check if model has graph structure that needs modification
         has_graph, graph_attr_name = self._model_has_graph_structure(self.model)
@@ -1434,6 +1439,7 @@ class Trainer(AbstractTrainer):
             # Use context manager to temporarily replace the graph during gradient computation
             with self._temporarily_replace_graph(self.model, graph_attr_name, modified_adj_matrix):
                 # Compute gradients on remaining graph (WITHOUT forget edges)
+                # This corresponds to ∇L_N_G' in the paper
                 for batch in k_hop_batches:
                     batch = batch.to(self.device)
 
@@ -1442,7 +1448,7 @@ class Trainer(AbstractTrainer):
                         batch,
                         param_list,
                         loss_func,
-                        average_scale=influenced_remaining_count,
+                        average_scale=influenced_count,
                     )
 
                     if len(grads_influenced_remaining) == 0:
@@ -1453,6 +1459,7 @@ class Trainer(AbstractTrainer):
         else:
             print(f"[GIF] Model has no graph structure. Computing gradients normally...")
             # For models without graph structure (e.g., BPR), compute normally
+            # Since there's no graph, the "remaining" is the same as using current embeddings
             for batch in k_hop_batches:
                 batch = batch.to(self.device)
 
@@ -1461,7 +1468,7 @@ class Trainer(AbstractTrainer):
                     batch,
                     param_list,
                     loss_func,
-                    average_scale=influenced_remaining_count,
+                    average_scale=influenced_count,
                 )
 
                 if len(grads_influenced_remaining) == 0:
@@ -1644,21 +1651,9 @@ class Trainer(AbstractTrainer):
         if param_list is None:
             param_list = self.target_params(self.model)
 
-        # Step 1: Add Gaussian noise to model parameters (simulates noisy loss function)
-        # The noise masks the gradient residual to provide certified guarantee
-        print(f"[CEU] Step 1: Adding Gaussian noise for certified guarantee...")
-        noise_dict = {}
-        with torch.no_grad():
-            for name, p in self.model.named_parameters():
-                if p.requires_grad:
-                    # Generate noise from N(0, sigma^2)
-                    noise = torch.randn_like(p) * ceu_sigma
-                    noise_dict[name] = noise
-                    # Note: we don't add noise directly to params here as it's implicitly in the loss
-
-        # Step 2: Compute gradients for nodes affected by edge removal
+        # Step 1: Compute gradients for nodes affected by edge removal
         # V_E_UL includes all nodes in the neighborhood of removed edges
-        print(f"[CEU] Step 2: Computing gradients for affected nodes...")
+        print(f"[CEU] Step 1: Computing gradients for affected nodes...")
 
         # Gradients on original graph (with removed edges)
         grads_forget_on_original = []
@@ -1678,27 +1673,66 @@ class Trainer(AbstractTrainer):
                     grads_forget_on_original[i] += cur_grads[i]
 
         # Gradients on remaining graph (without removed edges)
+        # IMPORTANT: For GNN models, we need to mask the forget edges in the graph structure
+        print(f"[CEU] Computing gradients on REMAINING graph (forget edges excluded)...")
         grads_forget_on_remaining = []
         influenced_sample_count = min(len(clean_forget_data.dataset), ceu_hessian_samples)
 
-        for batch_idx, interaction in enumerate(clean_forget_data):
-            if batch_idx * clean_forget_data.batch_size >= influenced_sample_count:
-                break
-            interaction = interaction.to(self.device)
+        # Check if model has graph structure that needs modification
+        has_graph, graph_attr_name = self._model_has_graph_structure(self.model)
 
-            cur_grads_remaining = self._batch_grad(
+        if has_graph:
+            print(f"[CEU] Model has graph structure ({graph_attr_name}). Building modified adjacency matrix...")
+            # Build modified adjacency matrix without forget edges
+            modified_adj_matrix = self._build_modified_adj_matrix(
                 self.model,
-                interaction,
-                param_list,
-                loss_func,
-                average_scale=influenced_sample_count,
+                forget_data,
+                retain_train_data.dataset
             )
 
-            if len(grads_forget_on_remaining) == 0:
-                grads_forget_on_remaining = [g for g in cur_grads_remaining]
-            else:
-                for i in range(len(cur_grads_remaining)):
-                    grads_forget_on_remaining[i] += cur_grads_remaining[i]
+            # Use context manager to temporarily replace the graph during gradient computation
+            with self._temporarily_replace_graph(self.model, graph_attr_name, modified_adj_matrix):
+                # Compute gradients on remaining graph (WITHOUT forget edges)
+                # This corresponds to grad(L(theta; V_E_UL, E\E_UL)) in the paper
+                for batch_idx, interaction in enumerate(clean_forget_data):
+                    if batch_idx * clean_forget_data.batch_size >= influenced_sample_count:
+                        break
+                    interaction = interaction.to(self.device)
+
+                    cur_grads_remaining = self._batch_grad(
+                        self.model,
+                        interaction,
+                        param_list,
+                        loss_func,
+                        average_scale=influenced_sample_count,
+                    )
+
+                    if len(grads_forget_on_remaining) == 0:
+                        grads_forget_on_remaining = [g for g in cur_grads_remaining]
+                    else:
+                        for i in range(len(cur_grads_remaining)):
+                            grads_forget_on_remaining[i] += cur_grads_remaining[i]
+        else:
+            print(f"[CEU] Model has no graph structure. Computing gradients normally...")
+            # For models without graph structure (e.g., BPR), compute normally
+            for batch_idx, interaction in enumerate(clean_forget_data):
+                if batch_idx * clean_forget_data.batch_size >= influenced_sample_count:
+                    break
+                interaction = interaction.to(self.device)
+
+                cur_grads_remaining = self._batch_grad(
+                    self.model,
+                    interaction,
+                    param_list,
+                    loss_func,
+                    average_scale=influenced_sample_count,
+                )
+
+                if len(grads_forget_on_remaining) == 0:
+                    grads_forget_on_remaining = [g for g in cur_grads_remaining]
+                else:
+                    for i in range(len(cur_grads_remaining)):
+                        grads_forget_on_remaining[i] += cur_grads_remaining[i]
 
         # Step 3: Compute Delta = grad(L(theta; V_E_UL, E)) - grad(L(theta; V_E_UL, E\E_UL))
         # This is the gradient change due to edge removal
@@ -1803,16 +1837,27 @@ class Trainer(AbstractTrainer):
         # x now contains H^{-1} * Delta (the influence estimate I_E_UL)
         influence_estimate = x
 
-        # Step 6: Update model parameters: theta_UL = theta_OR - I_E_UL / |V|
+        # Step 6: Add Gaussian noise for (epsilon, delta)-certified guarantee
+        # According to CEU paper, noise is added to the influence estimate to provide differential privacy
+        print(f"[CEU] Step 6: Adding Gaussian noise for certified guarantee...")
+        noisy_influence_estimate = []
+        with torch.no_grad():
+            for delta_p in influence_estimate:
+                # Add Gaussian noise N(0, sigma^2) to each parameter update
+                noise = torch.randn_like(delta_p) * ceu_sigma
+                noisy_delta_p = delta_p + noise
+                noisy_influence_estimate.append(noisy_delta_p)
+
+        # Step 7: Update model parameters: theta_UL = theta_OR - (I_E_UL + noise) / |V|
         # Note: We subtract because we want to remove the influence
-        print(f"[CEU] Step 6: Applying parameter updates...")
+        print(f"[CEU] Step 7: Applying parameter updates with noise...")
         with torch.no_grad():
             num_nodes = len(forget_data.dataset) + len(clean_forget_data.dataset)
-            for p, delta_p in zip(param_list, influence_estimate):
+            for p, noisy_delta_p in zip(param_list, noisy_influence_estimate):
                 # Scale by 1/|V| as per Equation 11 in the paper
-                p.data -= delta_p / num_nodes
+                p.data -= noisy_delta_p / num_nodes
 
-        print(f"[CEU] Unlearning complete!")
+        print(f"[CEU] Unlearning complete with (ε={ceu_epsilon}, δ)-certified guarantee!")
 
     def idea(
         self,
