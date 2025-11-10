@@ -527,6 +527,12 @@ def unlearn_recbole(
     ceu_epsilon=0.1,
     ceu_cg_iterations=100,
     ceu_hessian_samples=1024,
+    idea_damping=0.01,
+    idea_sigma=0.1,
+    idea_epsilon=0.1,
+    idea_delta=0.01,
+    idea_iterations=100,
+    idea_hessian_samples=1024,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -874,6 +880,23 @@ def unlearn_recbole(
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
             sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
+        elif unlearning_algorithm == "idea":
+            retain_batch_size = config["train_batch_size"]
+            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+            # IDEA: needs samples for Hessian computation and gradient estimation
+            idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
+            retain_samples_used_for_update = 128 * forget_size
+
+            total_samples_needed = max(
+                retain_samples_used_for_update,
+                idea_hessian_samples
+            )
+
+            # Cap to 10% of dataset
+            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+            sessions_needed = int(total_samples_needed / avg_session_length) + 1
+
         # Get complete sessions
         retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
             sessions_needed,
@@ -917,6 +940,12 @@ def unlearn_recbole(
             ceu_epsilon=ceu_epsilon,
             ceu_cg_iterations=ceu_cg_iterations,
             ceu_hessian_samples=ceu_hessian_samples,
+            idea_damping=idea_damping,
+            idea_sigma=idea_sigma,
+            idea_epsilon=idea_epsilon,
+            idea_delta=idea_delta,
+            idea_iterations=idea_iterations,
+            idea_hessian_samples=idea_hessian_samples,
         )
 
         request_end_time = time.time()

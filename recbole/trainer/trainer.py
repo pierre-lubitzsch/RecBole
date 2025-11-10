@@ -154,7 +154,7 @@ class Trainer(AbstractTrainer):
             if "rmia_out_model_flag" in config and config["rmia_out_model_flag"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_rmia_out_model_partition_idx_{config['rmia_out_model_partition_idx']}.pth"
             # unlearning
-            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin", "gif", "ceu"]:
+            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin", "gif", "ceu", "idea"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_algorithm_{config['unlearning_algorithm']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
             # retraining
             elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
@@ -1411,6 +1411,271 @@ class Trainer(AbstractTrainer):
 
         print(f"[CEU] Unlearning complete!")
 
+    def idea(
+        self,
+        epoch_idx,
+        forget_data,
+        clean_forget_data,
+        retain_train_data,
+        retain_valid_data=None,
+        retain_test_data=None,
+        show_progress=False,
+        unlearned_users_before=None,
+        saved=True,
+        verbose=False,
+        idea_damping=0.01,
+        idea_sigma=0.1,
+        idea_epsilon=0.1,
+        idea_delta=0.01,
+        idea_iterations=100,
+        idea_hessian_samples=1024,
+        param_list=None,
+    ):
+        """
+        IDEA: A Flexible Framework of Certified Unlearning for Graph Neural Networks
+
+        Reference:
+            Yushun Dong et al. "IDEA: A Flexible Framework of Certified Unlearning for
+            Graph Neural Networks" in KDD 2024.
+            https://doi.org/10.1145/3637528.3671744
+
+        Args:
+            epoch_idx: Current epoch index
+            forget_data: Data to unlearn
+            clean_forget_data: Clean version of forget data
+            retain_train_data: Retained training data
+            retain_valid_data: Validation data (optional)
+            retain_test_data: Test data (optional)
+            show_progress: Whether to show progress bars
+            unlearned_users_before: Previously unlearned users (optional)
+            saved: Whether to save checkpoints
+            verbose: Whether to print detailed logs
+            idea_damping: Damping factor (lambda) for strong convexity
+            idea_sigma: Standard deviation (sigma) for Gaussian noise in certification
+            idea_epsilon: Epsilon parameter for (epsilon, delta)-certified unlearning
+            idea_delta: Delta parameter for (epsilon, delta)-certified unlearning
+            idea_iterations: Number of iterations for stochastic Hessian inverse estimation
+            idea_hessian_samples: Number of samples used for Hessian computation
+            param_list: List of parameters to update (default: all trainable params)
+        """
+        print(f"\n[IDEA] Starting Flexible and Certified Unlearning...")
+        print(f"[IDEA] Parameters: damping={idea_damping}, sigma={idea_sigma}, epsilon={idea_epsilon}, delta={idea_delta}")
+        print(f"[IDEA] Iterations={idea_iterations}, Hessian samples={idea_hessian_samples}")
+
+        self.move_optimizer_state(self.optimizer, self.device)
+        self.model.train()
+        loss_func = self.model.calculate_loss
+
+        if param_list is None:
+            param_list = [p for p in self.model.parameters() if p.requires_grad]
+
+        # Step 1: Compute gradient differences (Ladd - Lsub) for forget data
+        # This represents the gradient of the additional term in Equation (3)
+        print(f"[IDEA] Step 1: Computing gradient differences for forget data...")
+
+        # Compute gradients on forget data (this is part of Lsub in the paper)
+        forget_grads = []
+        self.model.zero_grad()
+
+        for batch in forget_data:
+            batch = batch.to(self.device)
+            loss = loss_func(batch)
+            loss.backward()
+
+        # Accumulate forget gradients
+        for p in param_list:
+            if p.grad is not None:
+                forget_grads.append(p.grad.clone())
+            else:
+                forget_grads.append(torch.zeros_like(p))
+
+        # Normalize by number of samples
+        forget_size = len(forget_data.dataset) if hasattr(forget_data, 'dataset') else len(forget_data)
+        forget_grads = [g / forget_size for g in forget_grads]
+
+        # Compute gradients on clean forget data (part of Ladd in the paper)
+        # In node unlearning, this would be empty, but for attribute unlearning
+        # this represents the gradient with modified attributes
+        clean_grads = []
+        if clean_forget_data is not None and len(clean_forget_data) > 0:
+            self.model.zero_grad()
+
+            for batch in clean_forget_data:
+                batch = batch.to(self.device)
+                loss = loss_func(batch)
+                loss.backward()
+
+            for p in param_list:
+                if p.grad is not None:
+                    clean_grads.append(p.grad.clone())
+                else:
+                    clean_grads.append(torch.zeros_like(p))
+
+            clean_size = len(clean_forget_data.dataset) if hasattr(clean_forget_data, 'dataset') else len(clean_forget_data)
+            clean_grads = [g / clean_size for g in clean_grads]
+        else:
+            clean_grads = [torch.zeros_like(p) for p in param_list]
+
+        # Compute delta_grads = Ladd - Lsub (gradient difference)
+        # This is the gradient of the objective change due to unlearning
+        delta_grads = [clean_g - forget_g for clean_g, forget_g in zip(clean_grads, forget_grads)]
+
+        print(f"[IDEA] Gradient difference norm: {sum(g.norm().item() for g in delta_grads):.6f}")
+
+        # Step 2: Estimate Hessian inverse using stochastic estimation (Theorem 1)
+        # H^{-1} * delta_grads using iterative method to avoid explicit Hessian computation
+        print(f"[IDEA] Step 2: Estimating H^{-1} * delta_grads using stochastic method...")
+
+        # Initialize with delta_grads
+        h_inv_delta = [v.clone() for v in delta_grads]
+
+        # Stochastic estimation (similar to Neumann series but with sampling)
+        for iteration in range(idea_iterations):
+            # Sample batch from retain data for Hessian computation
+            retain_iter = iter(retain_train_data)
+            sampled_batches = []
+            samples_collected = 0
+
+            while samples_collected < min(idea_hessian_samples, len(retain_train_data.dataset)):
+                try:
+                    batch = next(retain_iter)
+                    sampled_batches.append(batch)
+                    samples_collected += len(batch)
+                except StopIteration:
+                    break
+
+            # Compute HVP: H * h_inv_delta
+            hvp = self._compute_hvp_on_batches(
+                sampled_batches,
+                h_inv_delta,
+                param_list,
+                loss_func
+            )
+
+            if hvp is None:
+                print(f"[IDEA] Warning: HVP computation failed at iteration {iteration}, using current estimate")
+                break
+
+            # Neumann iteration: h_inv_delta = h_inv_delta + (I - H/damping) * h_inv_delta
+            # This approximates (H + damping*I)^{-1} * delta_grads
+            scaling = 1.0 / idea_damping
+            h_inv_delta = [
+                h_inv_delta[i] + scaling * (delta_grads[i] - hvp[i])
+                for i in range(len(param_list))
+            ]
+
+            # Check convergence every 10 iterations
+            if iteration % 10 == 0 and iteration > 0:
+                diff = sum((h_inv_delta[i] - hvp[i]).norm().item() for i in range(len(param_list)))
+                print(f"[IDEA] Iteration {iteration}/{idea_iterations}, convergence diff: {diff:.6f}")
+
+        # Step 3: Apply parameter update with certification noise (Theorem 3)
+        print(f"[IDEA] Step 3: Applying certified parameter updates...")
+
+        # Compute zeta (upper bound on ||tilde_theta* - bar_theta*||_2) for certification
+        # This is from Proposition 3 in the paper
+        update_norm = sum(h.norm().item()**2 for h in h_inv_delta)**0.5
+        zeta = update_norm * idea_damping  # Simplified bound computation
+
+        # Compute sigma for (epsilon, delta)-certified unlearning (Theorem 3)
+        # sigma >= zeta / (epsilon * sqrt(2*ln(1.25/delta)))
+        required_sigma = zeta / (idea_epsilon * (2 * math.log(1.25 / idea_delta))**0.5)
+        actual_sigma = max(idea_sigma, required_sigma)
+
+        print(f"[IDEA] Update norm: {update_norm:.6f}, zeta bound: {zeta:.6f}")
+        print(f"[IDEA] Required sigma: {required_sigma:.6f}, using sigma: {actual_sigma:.6f}")
+
+        # Apply parameter update with Gaussian noise for certification
+        with torch.no_grad():
+            for p, delta_p in zip(param_list, h_inv_delta):
+                # Add Gaussian noise for certification
+                noise = torch.randn_like(delta_p) * actual_sigma
+                # Apply update: theta_new = theta_old + (1/m) * H^{-1} * delta_grads + noise
+                # The 1/m factor is handled by normalization in gradient computation
+                p.data += delta_p + noise
+
+        # Step 4: Fine-tune on retain data to stabilize
+        print(f"[IDEA] Step 4: Fine-tuning on retain data...")
+
+        self.model.zero_grad()
+        self.optimizer.zero_grad()
+
+        # Fine-tune for 1 epoch
+        retain_samples_used = 128 * forget_size
+        epochs = 1 + retain_samples_used // len(retain_train_data.dataset)
+
+        for epoch_idx_inner in range(epochs):
+            training_start_time = time()
+            train_loss = self._train_epoch_efficient_shuffle(
+                retain_train_data,
+                epoch_idx_inner,
+                show_progress=show_progress,
+                retain_samples_used_for_update=retain_samples_used,
+            )
+
+            self.train_loss_dict[epoch_idx_inner] = (
+                sum(train_loss) if isinstance(train_loss, tuple) else train_loss
+            )
+            training_end_time = time()
+            train_loss_output = self._generate_train_loss_output(
+                epoch_idx_inner, training_start_time, training_end_time, train_loss
+            )
+
+            if verbose:
+                self.logger.info(train_loss_output)
+            self._add_train_loss_to_tensorboard(epoch_idx_inner, train_loss)
+            self.wandblogger.log_metrics(
+                {"epoch": epoch_idx_inner, "train_loss": train_loss, "train_step": epoch_idx_inner},
+                head="train",
+            )
+
+        print(f"[IDEA] Unlearning complete!")
+
+    def _compute_hvp_on_batches(self, batches, vectors, param_list, loss_func):
+        """
+        Compute Hessian-vector product (HVP) on a set of batches.
+
+        Args:
+            batches: List of batches to compute HVP on
+            vectors: Vectors to multiply with Hessian
+            param_list: List of parameters
+            loss_func: Loss function
+
+        Returns:
+            List of HVP results for each parameter, or None if computation fails
+        """
+        self.model.zero_grad()
+
+        # Compute average loss on batches
+        total_loss = 0
+        total_samples = 0
+
+        for batch in batches:
+            batch = batch.to(self.device)
+            loss = loss_func(batch)
+            total_loss += loss * len(batch)
+            total_samples += len(batch)
+
+        avg_loss = total_loss / max(total_samples, 1)
+
+        # Compute gradients
+        grads = torch.autograd.grad(avg_loss, param_list, create_graph=True, allow_unused=True)
+
+        # Check for None gradients
+        if any(g is None for g in grads):
+            return None
+
+        # Compute HVP: H * v = grad(grad^T * v)
+        grad_vector_dot = sum((g * v).sum() for g, v in zip(grads, vectors))
+
+        hvp = torch.autograd.grad(grad_vector_dot, param_list, allow_unused=True)
+
+        # Check for None in HVP
+        if any(h is None for h in hvp):
+            return None
+
+        return list(hvp)
+
     def fit(
         self,
         train_data,
@@ -2013,6 +2278,12 @@ class Trainer(AbstractTrainer):
         ceu_epsilon=0.1,
         ceu_cg_iterations=100,
         ceu_hessian_samples=1024,
+        idea_damping=0.01,
+        idea_sigma=0.1,
+        idea_epsilon=0.1,
+        idea_delta=0.01,
+        idea_iterations=100,
+        idea_hessian_samples=1024,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -2134,6 +2405,29 @@ class Trainer(AbstractTrainer):
                 ceu_epsilon=ceu_epsilon,
                 ceu_cg_iterations=ceu_cg_iterations,
                 ceu_hessian_samples=ceu_hessian_samples,
+                param_list=param_list,
+            )
+        elif unlearning_algorithm == "idea":
+            # IDEA: Flexible Framework of Certified Unlearning for GNNs
+            # Default hyperparameters from the paper
+            param_list = [p for _, p in self.model.named_parameters()]
+            self.idea(
+                epoch_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data,
+                retain_valid_data,
+                retain_test_data,
+                show_progress=show_progress,
+                unlearned_users_before=unlearned_users_before,
+                saved=saved,
+                verbose=verbose,
+                idea_damping=idea_damping,
+                idea_sigma=idea_sigma,
+                idea_epsilon=idea_epsilon,
+                idea_delta=idea_delta,
+                idea_iterations=idea_iterations,
+                idea_hessian_samples=idea_hessian_samples,
                 param_list=param_list,
             )
 

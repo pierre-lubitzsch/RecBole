@@ -127,7 +127,7 @@ def main():
         "--unlearning_algorithm",
         type=str,
         default="scif",
-        choices=["scif", "kookmin", "fanchuan", "gif", "ceu"],
+        choices=["scif", "kookmin", "fanchuan", "gif", "ceu", "idea"],
         help="what unlearning algorithm to use",
     )
     parser.add_argument(
@@ -242,6 +242,44 @@ def main():
         help="number of samples used for Hessian computation in CEU",
     )
 
+    # IDEA-specific parameters
+    parser.add_argument(
+        "--idea_damping",
+        type=float,
+        default=0.01,
+        help="damping factor (lambda) for IDEA Hessian approximation (for strong convexity)",
+    )
+    parser.add_argument(
+        "--idea_sigma",
+        type=float,
+        default=0.1,
+        help="standard deviation (sigma) for Gaussian noise in IDEA certification",
+    )
+    parser.add_argument(
+        "--idea_epsilon",
+        type=float,
+        default=0.1,
+        help="epsilon parameter for (epsilon, delta)-certified unlearning guarantee in IDEA",
+    )
+    parser.add_argument(
+        "--idea_delta",
+        type=float,
+        default=0.01,
+        help="delta parameter for (epsilon, delta)-certified unlearning guarantee in IDEA",
+    )
+    parser.add_argument(
+        "--idea_iterations",
+        type=int,
+        default=100,
+        help="number of iterations for stochastic Hessian inverse estimation in IDEA",
+    )
+    parser.add_argument(
+        "--idea_hessian_samples",
+        type=int,
+        default=1024,
+        help="number of samples used for Hessian computation in IDEA",
+    )
+
     # Spam/attack configuration
     parser.add_argument(
         "--spam",
@@ -315,6 +353,12 @@ def main():
         "ceu_epsilon": args.ceu_epsilon,
         "ceu_cg_iterations": args.ceu_cg_iterations,
         "ceu_hessian_samples": args.ceu_hessian_samples,
+        "idea_damping": args.idea_damping,
+        "idea_sigma": args.idea_sigma,
+        "idea_epsilon": args.idea_epsilon,
+        "idea_delta": args.idea_delta,
+        "idea_iterations": args.idea_iterations,
+        "idea_hessian_samples": args.idea_hessian_samples,
     }
     if args.gif_retain_samples is not None:
         config_dict["gif_retain_samples"] = args.gif_retain_samples
@@ -348,6 +392,12 @@ def main():
         ceu_epsilon=args.ceu_epsilon,
         ceu_cg_iterations=args.ceu_cg_iterations,
         ceu_hessian_samples=args.ceu_hessian_samples,
+        idea_damping=args.idea_damping,
+        idea_sigma=args.idea_sigma,
+        idea_epsilon=args.idea_epsilon,
+        idea_delta=args.idea_delta,
+        idea_iterations=args.idea_iterations,
+        idea_hessian_samples=args.idea_hessian_samples,
     )
 
 if __name__ == "__main__":
