@@ -1110,18 +1110,20 @@ class Trainer(AbstractTrainer):
 
             if mask.any():
                 # Filter the batch to only include target users
-                filtered_batch = {}
+                filtered_batch_dict = {}
                 # Iterate over keys in the Interaction object
                 for key in batch.interaction:
                     value = batch.interaction[key]
                     if isinstance(value, torch.Tensor):
-                        filtered_batch[key] = value[mask]
+                        filtered_batch_dict[key] = value[mask]
                     else:
-                        filtered_batch[key] = value
+                        filtered_batch_dict[key] = value
 
-                if len(filtered_batch[retain_train_data.dataset.uid_field]) > 0:
+                if len(filtered_batch_dict[retain_train_data.dataset.uid_field]) > 0:
+                    # Convert dict back to Interaction object so it has .to() method
+                    filtered_batch = Interaction(filtered_batch_dict)
                     filtered_batches.append(filtered_batch)
-                    total_samples += len(filtered_batch[retain_train_data.dataset.uid_field])
+                    total_samples += len(filtered_batch_dict[retain_train_data.dataset.uid_field])
 
                     if max_samples and total_samples >= max_samples:
                         break
