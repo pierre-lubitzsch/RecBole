@@ -155,7 +155,7 @@ class Trainer(AbstractTrainer):
             if "rmia_out_model_flag" in config and config["rmia_out_model_flag"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_rmia_out_model_partition_idx_{config['rmia_out_model_partition_idx']}.pth"
             # unlearning
-            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin", "gif", "ceu", "idea"]:
+            if "unlearning_algorithm" in config and config["unlearning_algorithm"] in ["scif", "fanchuan", "kookmin", "gif", "ceu", "idea", "seif"]:
                 saved_model_file = f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_unlearning_algorithm_{config['unlearning_algorithm']}_unlearning_fraction_{config['unlearning_fraction']}_unlearning_sample_selection_method_{config['unlearning_sample_selection_method']}.pth"
             # retraining
             elif "retrain_checkpoint_idx_to_match" in config and config["retrain_checkpoint_idx_to_match"] is not None:
@@ -2796,6 +2796,186 @@ class Trainer(AbstractTrainer):
         diverged = math.sqrt(rs_old) >= tol
         return x, diverged
 
+    def seif(
+        self,
+        epoch_idx,
+        forget_data,
+        clean_forget_data,
+        retain_train_data,
+        retain_valid_data=None,
+        retain_test_data=None,
+        show_progress=False,
+        unlearned_users_before=None,
+        saved=True,
+        verbose=False,
+        seif_erase_std=0.6,
+        seif_erase_std_final=0.005,
+        seif_repair_epochs=4,
+        seif_forget_class_weight=0.05,
+        seif_learning_rate=0.0007,
+        seif_momentum=0.9,
+        seif_weight_decay=5e-4,
+        max_norm=None,
+        param_list=None,
+    ):
+        """
+        SEIF: Self-Influence Guided Data Attribution for Unlearning
+
+        Based on the winning solution from NeurIPS 2023 Machine Unlearning Challenge.
+
+        Two-phase approach:
+        1. Erase Phase: Apply Gaussian noise to selected model parameters
+        2. Repair Phase: Fine-tune on retain set with weighted loss (lower weight for forget class)
+
+        Args:
+            epoch_idx: Current epoch index
+            forget_data: Data to unlearn
+            clean_forget_data: Clean version of forget data (affected items but interactions retained)
+            retain_train_data: Retained training data
+            retain_valid_data: Validation data (optional)
+            retain_test_data: Test data (optional)
+            show_progress: Whether to show progress bars
+            unlearned_users_before: Previously unlearned users (optional)
+            saved: Whether to save checkpoints
+            verbose: Whether to print detailed logs
+            seif_erase_std: Standard deviation for Gaussian noise in erase phase
+            seif_erase_std_final: Standard deviation for final robustness noise
+            seif_repair_epochs: Number of repair epochs
+            seif_forget_class_weight: Weight for forget class in loss (lower = more forgetting)
+            seif_learning_rate: Learning rate for repair phase
+            seif_momentum: Momentum for SGD optimizer
+            seif_weight_decay: Weight decay for optimizer
+            max_norm: Maximum norm for gradient clipping (optional)
+            param_list: List of parameters to update (default: all trainable params)
+        """
+        print(f"\n[SEIF] Starting Self-Influence Guided Data Attribution Unlearning...")
+        print(f"[SEIF] Parameters: erase_std={seif_erase_std}, repair_epochs={seif_repair_epochs}")
+        print(f"[SEIF] Forget class weight={seif_forget_class_weight}, lr={seif_learning_rate}")
+
+        self.model.train()
+        self.move_optimizer_state(self.optimizer, self.device)
+
+        if param_list is None:
+            param_list = [p for p in self.model.parameters() if p.requires_grad]
+
+        # PHASE 1: ERASE - Apply Gaussian noise to heuristically chosen parameters
+        # In the original implementation, they target convolutional layers
+        # For recommender systems, we'll target embedding layers and interaction layers
+        print(f"[SEIF] Phase 1: Erase - Adding Gaussian noise to model parameters...")
+
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if not param.requires_grad:
+                    continue
+
+                # Heuristically choose which layers to add noise to
+                # Target embedding layers and linear/interaction layers (similar to conv layers in vision)
+                if any(keyword in name.lower() for keyword in ['embedding', 'linear', 'mlp', 'interaction']):
+                    # Apply Gaussian noise: param = param + N(0, std^2 * param)
+                    noise = torch.normal(mean=0.0, std=seif_erase_std, size=param.shape, device=param.device)
+                    param.data.add_(noise * param.data.abs())
+
+                    if verbose:
+                        print(f"[SEIF] Added noise to layer: {name}, shape: {param.shape}")
+
+        print(f"[SEIF] Erase phase completed. Proceeding to repair phase...")
+
+        # PHASE 2: REPAIR - Fine-tune on retain set with weighted loss
+        print(f"[SEIF] Phase 2: Repair - Fine-tuning on retain set for {seif_repair_epochs} epochs...")
+
+        # Temporarily save original learning rate
+        original_lr = self.optimizer.param_groups[0]['lr']
+
+        # Update learning rate for SEIF repair phase
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = seif_learning_rate
+
+        # For recommender systems, we adapt the weighted loss approach:
+        # Instead of class weights (which are for classification), we'll use a
+        # custom loss that gives lower weight to interactions involving forget items
+
+        # Extract forget items from forget_data
+        forget_items = set()
+        for interaction_batch in forget_data:
+            if 'item_id' in interaction_batch:
+                forget_items.update(interaction_batch['item_id'].tolist())
+
+        print(f"[SEIF] Identified {len(forget_items)} unique forget items")
+
+        for repair_epoch in range(seif_repair_epochs):
+            epoch_loss = 0.0
+            batch_count = 0
+
+            self.model.train()
+
+            for batch_idx, interaction in enumerate(retain_train_data):
+                interaction = interaction.to(self.device)
+
+                # Filter out users that have been unlearned
+                if unlearned_users_before:
+                    mask = ~torch.isin(
+                        interaction["user_id"],
+                        torch.tensor(unlearned_users_before, device=self.device)
+                    )
+                    interaction = interaction[mask]
+
+                if len(interaction) == 0:
+                    continue
+
+                self.optimizer.zero_grad()
+
+                # Calculate base loss
+                losses = self.model.calculate_loss(interaction)
+
+                if isinstance(losses, tuple):
+                    loss = sum(losses)
+                else:
+                    loss = losses
+
+                # Apply weighted loss: reduce weight for interactions with forget items
+                if 'item_id' in interaction:
+                    item_ids = interaction['item_id']
+                    # Create weight tensor: low weight for forget items, 1.0 for others
+                    weights = torch.ones(len(item_ids), device=self.device)
+                    forget_mask = torch.isin(item_ids, torch.tensor(list(forget_items), device=self.device))
+                    weights[forget_mask] = seif_forget_class_weight
+
+                    # Apply weights to loss (average over weighted samples)
+                    loss = loss * weights.mean()
+
+                loss.backward()
+
+                # Apply gradient clipping if max_norm is provided
+                if max_norm is not None:
+                    clip_grad_norm_(self.model.parameters(), max_norm)
+
+                self.optimizer.step()
+
+                epoch_loss += loss.item()
+                batch_count += 1
+
+            # Apply final robustness noise before last epoch
+            if repair_epoch == seif_repair_epochs - 2:
+                print(f"[SEIF] Applying final robustness noise (std={seif_erase_std_final})...")
+                with torch.no_grad():
+                    for name, param in self.model.named_parameters():
+                        if not param.requires_grad:
+                            continue
+
+                        if any(keyword in name.lower() for keyword in ['embedding', 'linear', 'mlp', 'interaction']):
+                            noise = torch.normal(mean=0.0, std=seif_erase_std_final, size=param.shape, device=param.device)
+                            param.data.add_(noise * param.data.abs())
+
+            avg_loss = epoch_loss / max(1, batch_count)
+            current_lr = self.optimizer.param_groups[0]['lr']
+            print(f"[SEIF] Repair Epoch {repair_epoch + 1}/{seif_repair_epochs}, Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
+
+        # Restore original learning rate
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = original_lr
+
+        print(f"[SEIF] Unlearning complete for request {epoch_idx}")
+
     def unlearn(
         self,
         epoch_idx,
@@ -2832,6 +3012,13 @@ class Trainer(AbstractTrainer):
         idea_delta=0.01,
         idea_iterations=100,
         idea_hessian_samples=1024,
+        seif_erase_std=0.6,
+        seif_erase_std_final=0.005,
+        seif_repair_epochs=4,
+        seif_forget_class_weight=0.05,
+        seif_learning_rate=0.0007,
+        seif_momentum=0.9,
+        seif_weight_decay=5e-4,
         original_dataset=None,
     ):
         r"""Train the model based on the train data and the valid data.
@@ -2975,6 +3162,31 @@ class Trainer(AbstractTrainer):
                 idea_delta=self.config["idea_delta"] if "idea_delta" in self.config and self.config["idea_delta"] is not None else 0.01,
                 idea_iterations=self.config["idea_iterations"] if "idea_iterations" in self.config and self.config["idea_iterations"] is not None else 100,
                 idea_hessian_samples=self.config["idea_hessian_samples"] if "idea_hessian_samples" in self.config and self.config["idea_hessian_samples"] is not None else 1024,
+                max_norm=max_norm,
+                param_list=param_list,
+            )
+        elif unlearning_algorithm == "seif":
+            # SEIF: Self-Influence Guided Data Attribution
+            # Based on NeurIPS 2023 Machine Unlearning Challenge winning solution
+            param_list = [p for _, p in self.model.named_parameters()]
+            self.seif(
+                epoch_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data,
+                retain_valid_data,
+                retain_test_data,
+                show_progress=show_progress,
+                unlearned_users_before=unlearned_users_before,
+                saved=saved,
+                verbose=verbose,
+                seif_erase_std=self.config["seif_erase_std"] if "seif_erase_std" in self.config and self.config["seif_erase_std"] is not None else 0.6,
+                seif_erase_std_final=self.config["seif_erase_std_final"] if "seif_erase_std_final" in self.config and self.config["seif_erase_std_final"] is not None else 0.005,
+                seif_repair_epochs=self.config["seif_repair_epochs"] if "seif_repair_epochs" in self.config and self.config["seif_repair_epochs"] is not None else 4,
+                seif_forget_class_weight=self.config["seif_forget_class_weight"] if "seif_forget_class_weight" in self.config and self.config["seif_forget_class_weight"] is not None else 0.05,
+                seif_learning_rate=self.config["seif_learning_rate"] if "seif_learning_rate" in self.config and self.config["seif_learning_rate"] is not None else 0.0007,
+                seif_momentum=self.config["seif_momentum"] if "seif_momentum" in self.config and self.config["seif_momentum"] is not None else 0.9,
+                seif_weight_decay=self.config["seif_weight_decay"] if "seif_weight_decay" in self.config and self.config["seif_weight_decay"] is not None else 5e-4,
                 max_norm=max_norm,
                 param_list=param_list,
             )

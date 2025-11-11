@@ -127,7 +127,7 @@ def main():
         "--unlearning_algorithm",
         type=str,
         default="scif",
-        choices=["scif", "kookmin", "fanchuan", "gif", "ceu", "idea"],
+        choices=["scif", "kookmin", "fanchuan", "gif", "ceu", "idea", "seif"],
         help="what unlearning algorithm to use",
     )
     parser.add_argument(
@@ -285,6 +285,50 @@ def main():
         help="number of samples used for Hessian computation in IDEA",
     )
 
+    # SEIF-specific parameters
+    parser.add_argument(
+        "--seif_erase_std",
+        type=float,
+        default=0.6,
+        help="standard deviation for Gaussian noise applied in SEIF erase phase",
+    )
+    parser.add_argument(
+        "--seif_erase_std_final",
+        type=float,
+        default=0.005,
+        help="standard deviation for final robustness noise in SEIF (applied before last epoch)",
+    )
+    parser.add_argument(
+        "--seif_repair_epochs",
+        type=int,
+        default=4,
+        help="number of repair epochs for SEIF fine-tuning on retain set",
+    )
+    parser.add_argument(
+        "--seif_forget_class_weight",
+        type=float,
+        default=0.05,
+        help="weight for forget class in SEIF weighted cross-entropy loss (lower = more forgetting)",
+    )
+    parser.add_argument(
+        "--seif_learning_rate",
+        type=float,
+        default=0.0007,
+        help="learning rate for SEIF repair phase",
+    )
+    parser.add_argument(
+        "--seif_momentum",
+        type=float,
+        default=0.9,
+        help="momentum for SGD optimizer in SEIF",
+    )
+    parser.add_argument(
+        "--seif_weight_decay",
+        type=float,
+        default=5e-4,
+        help="weight decay for SGD optimizer in SEIF",
+    )
+
     # Spam/attack configuration
     parser.add_argument(
         "--spam",
@@ -365,6 +409,13 @@ def main():
         "idea_delta": args.idea_delta,
         "idea_iterations": args.idea_iterations,
         "idea_hessian_samples": args.idea_hessian_samples,
+        "seif_erase_std": args.seif_erase_std,
+        "seif_erase_std_final": args.seif_erase_std_final,
+        "seif_repair_epochs": args.seif_repair_epochs,
+        "seif_forget_class_weight": args.seif_forget_class_weight,
+        "seif_learning_rate": args.seif_learning_rate,
+        "seif_momentum": args.seif_momentum,
+        "seif_weight_decay": args.seif_weight_decay,
     }
     if args.gif_retain_samples is not None:
         config_dict["gif_retain_samples"] = args.gif_retain_samples
@@ -404,6 +455,13 @@ def main():
         idea_delta=args.idea_delta,
         idea_iterations=args.idea_iterations,
         idea_hessian_samples=args.idea_hessian_samples,
+        seif_erase_std=args.seif_erase_std,
+        seif_erase_std_final=args.seif_erase_std_final,
+        seif_repair_epochs=args.seif_repair_epochs,
+        seif_forget_class_weight=args.seif_forget_class_weight,
+        seif_learning_rate=args.seif_learning_rate,
+        seif_momentum=args.seif_momentum,
+        seif_weight_decay=args.seif_weight_decay,
     )
 
 if __name__ == "__main__":

@@ -534,6 +534,13 @@ def unlearn_recbole(
     idea_delta=0.01,
     idea_iterations=100,
     idea_hessian_samples=1024,
+    seif_erase_std=0.6,
+    seif_erase_std_final=0.005,
+    seif_repair_epochs=4,
+    seif_forget_class_weight=0.05,
+    seif_learning_rate=0.0007,
+    seif_momentum=0.9,
+    seif_weight_decay=5e-4,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -678,6 +685,8 @@ def unlearn_recbole(
     elif unlearning_algorithm == "ceu":
         retain_sessions_per_request = 32  # Number of complete user sessions
     elif unlearning_algorithm == "idea":
+        retain_sessions_per_request = 32  # Number of complete user sessions
+    elif unlearning_algorithm == "seif":
         retain_sessions_per_request = 32  # Number of complete user sessions
     
     # Pre-sample retain data for all unlearning requests
@@ -900,6 +909,21 @@ def unlearn_recbole(
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
             sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
+        elif unlearning_algorithm == "seif":
+            retain_batch_size = config["train_batch_size"]
+            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+            # SEIF: needs samples for repair phase fine-tuning
+            # Use similar amount as other methods - enough for multiple epochs
+            seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
+            retain_samples_used_for_update = 128 * forget_size * seif_repair_epochs
+
+            total_samples_needed = retain_samples_used_for_update
+
+            # Cap to 10% of dataset
+            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+            sessions_needed = int(total_samples_needed / avg_session_length) + 1
+
         # Get complete sessions
         retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
             sessions_needed,
@@ -955,6 +979,13 @@ def unlearn_recbole(
             idea_delta=idea_delta,
             idea_iterations=idea_iterations,
             idea_hessian_samples=idea_hessian_samples,
+            seif_erase_std=seif_erase_std,
+            seif_erase_std_final=seif_erase_std_final,
+            seif_repair_epochs=seif_repair_epochs,
+            seif_forget_class_weight=seif_forget_class_weight,
+            seif_learning_rate=seif_learning_rate,
+            seif_momentum=seif_momentum,
+            seif_weight_decay=seif_weight_decay,
             original_dataset=dataset,
         )
 
