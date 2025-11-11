@@ -1111,7 +1111,9 @@ class Trainer(AbstractTrainer):
             if mask.any():
                 # Filter the batch to only include target users
                 filtered_batch = {}
-                for key, value in batch.items():
+                # Iterate over keys in the Interaction object
+                for key in batch.interaction:
+                    value = batch.interaction[key]
                     if isinstance(value, torch.Tensor):
                         filtered_batch[key] = value[mask]
                     else:
