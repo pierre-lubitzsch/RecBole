@@ -1340,6 +1340,7 @@ class Trainer(AbstractTrainer):
         gif_iterations=100,
         gif_k_hops=2,
         gif_use_true_khop=False,
+        max_norm=None,
         param_list=None,
         original_dataset=None,
     ):
@@ -1619,6 +1620,15 @@ class Trainer(AbstractTrainer):
 
         # Step 6: Apply parameter update: theta_new = theta_old + H^{-1} * delta_L
         print(f"[GIF] Step 6: Applying parameter updates...")
+
+        # Optionally clip updates if max_norm is specified
+        if max_norm is not None:
+            total_norm = sum(h.norm().item()**2 for h in h_inv_v)**0.5
+            clip_coef = max_norm / (total_norm + 1e-6)
+            if clip_coef < 1:
+                print(f"[GIF] Clipping updates: norm={total_norm:.6f}, max_norm={max_norm}, clip_coef={clip_coef:.6f}")
+                h_inv_v = [h * clip_coef for h in h_inv_v]
+
         with torch.no_grad():
             for p, delta_p in zip(param_list, h_inv_v):
                 # Apply the update (note: we ADD because we want to remove influence)
@@ -1676,6 +1686,7 @@ class Trainer(AbstractTrainer):
         ceu_epsilon=0.1,
         ceu_cg_iterations=100,
         ceu_hessian_samples=1024,
+        max_norm=None,
         param_list=None,
     ):
         """
@@ -1901,6 +1912,14 @@ class Trainer(AbstractTrainer):
         # x now contains H^{-1} * Delta (the influence estimate I_E_UL)
         influence_estimate = x
 
+        # Optionally clip influence estimate if max_norm is specified (before adding noise)
+        if max_norm is not None:
+            total_norm = sum(h.norm().item()**2 for h in influence_estimate)**0.5
+            clip_coef = max_norm / (total_norm + 1e-6)
+            if clip_coef < 1:
+                print(f"[CEU] Clipping influence estimate: norm={total_norm:.6f}, max_norm={max_norm}, clip_coef={clip_coef:.6f}")
+                influence_estimate = [h * clip_coef for h in influence_estimate]
+
         # Step 6: Add Gaussian noise for (epsilon, delta)-certified guarantee
         # According to CEU paper, noise is added to the influence estimate to provide differential privacy
         print(f"[CEU] Step 6: Adding Gaussian noise for certified guarantee...")
@@ -1941,6 +1960,7 @@ class Trainer(AbstractTrainer):
         idea_delta=0.01,
         idea_iterations=100,
         idea_hessian_samples=1024,
+        max_norm=None,
         param_list=None,
     ):
         """
@@ -1968,6 +1988,7 @@ class Trainer(AbstractTrainer):
             idea_delta: Delta parameter for (epsilon, delta)-certified unlearning
             idea_iterations: Number of iterations for stochastic Hessian inverse estimation
             idea_hessian_samples: Number of samples used for Hessian computation
+            max_norm: Maximum norm for gradient clipping (optional, prevents gradient explosion)
             param_list: List of parameters to update (default: all trainable params)
         """
         print(f"\n[IDEA] Starting Flexible and Certified Unlearning...")
@@ -2084,6 +2105,14 @@ class Trainer(AbstractTrainer):
         # Step 3: Apply parameter update with certification noise (Theorem 3)
         print(f"[IDEA] Step 3: Applying certified parameter updates...")
 
+        # Optionally clip updates if max_norm is specified (before computing certification parameters)
+        if max_norm is not None:
+            total_norm = sum(h.norm().item()**2 for h in h_inv_delta)**0.5
+            clip_coef = max_norm / (total_norm + 1e-6)
+            if clip_coef < 1:
+                print(f"[IDEA] Clipping updates: norm={total_norm:.6f}, max_norm={max_norm}, clip_coef={clip_coef:.6f}")
+                h_inv_delta = [h * clip_coef for h in h_inv_delta]
+
         # Compute zeta (upper bound on ||tilde_theta* - bar_theta*||_2) for certification
         # This is from Proposition 3 in the paper
         update_norm = sum(h.norm().item()**2 for h in h_inv_delta)**0.5
@@ -2098,6 +2127,7 @@ class Trainer(AbstractTrainer):
         print(f"[IDEA] Required sigma: {required_sigma:.6f}, using sigma: {actual_sigma:.6f}")
 
         # Apply parameter update with Gaussian noise for certification
+
         with torch.no_grad():
             for p, delta_p in zip(param_list, h_inv_delta):
                 # Add Gaussian noise for certification
@@ -2897,6 +2927,7 @@ class Trainer(AbstractTrainer):
                 gif_iterations=self.config["gif_iterations"] if "gif_iterations" in self.config and self.config["gif_iterations"] is not None else 100,
                 gif_k_hops=self.config["gif_k_hops"] if "gif_k_hops" in self.config and self.config["gif_k_hops"] is not None else 2,
                 gif_use_true_khop=self.config["gif_use_true_khop"] if "gif_use_true_khop" in self.config and self.config["gif_use_true_khop"] is not None else False,
+                max_norm=max_norm,
                 param_list=param_list,
                 original_dataset=original_dataset,
             )
@@ -2920,6 +2951,7 @@ class Trainer(AbstractTrainer):
                 ceu_epsilon=self.config["ceu_epsilon"] if "ceu_epsilon" in self.config and self.config["ceu_epsilon"] is not None else 0.1,
                 ceu_cg_iterations=self.config["ceu_cg_iterations"] if "ceu_cg_iterations" in self.config and self.config["ceu_cg_iterations"] is not None else 100,
                 ceu_hessian_samples=self.config["ceu_hessian_samples"] if "ceu_hessian_samples" in self.config and self.config["ceu_hessian_samples"] is not None else 1024,
+                max_norm=max_norm,
                 param_list=param_list,
             )
         elif unlearning_algorithm == "idea":
@@ -2943,6 +2975,7 @@ class Trainer(AbstractTrainer):
                 idea_delta=self.config["idea_delta"] if "idea_delta" in self.config and self.config["idea_delta"] is not None else 0.01,
                 idea_iterations=self.config["idea_iterations"] if "idea_iterations" in self.config and self.config["idea_iterations"] is not None else 100,
                 idea_hessian_samples=self.config["idea_hessian_samples"] if "idea_hessian_samples" in self.config and self.config["idea_hessian_samples"] is not None else 1024,
+                max_norm=max_norm,
                 param_list=param_list,
             )
 
