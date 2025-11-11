@@ -1342,8 +1342,8 @@ class Trainer(AbstractTrainer):
         gif_damping=0.01,
         gif_scale_factor=1000,
         gif_iterations=100,
-        gif_k_hops=2,
-        gif_use_true_khop=False,
+        gif_k_hops=4,
+        gif_use_random_retain_samples=False,
         max_norm=None,
         param_list=None,
         original_dataset=None,
@@ -1370,8 +1370,10 @@ class Trainer(AbstractTrainer):
             gif_damping: Damping factor (lambda) for Hessian approximation convergence
             gif_scale_factor: Scaling factor for Hessian to ensure convergence
             gif_iterations: Number of iterations for Hessian inverse approximation
-            gif_k_hops: Number of hops for influenced neighbors (default: 2)
+            gif_k_hops: Number of hops for influenced neighbors (default: 4)
+            gif_use_random_retain_samples: Use random sampling instead of k-hop (default: False)
             param_list: List of parameters to update (default: all trainable params)
+            original_dataset: Original dataset (retain + forget) for k-hop computation
         """
         print(f"\n[GIF] Starting Graph Influence Function unlearning...")
         print(f"[GIF] Parameters: damping={gif_damping}, scale={gif_scale_factor}, iterations={gif_iterations}, k_hops={gif_k_hops}")
@@ -1401,12 +1403,11 @@ class Trainer(AbstractTrainer):
                 for i in range(len(cur_grads)):
                     grads_forget_original[i] += cur_grads[i]
 
-        # Step 2: Compute influenced neighbors using k-hop neighborhood
-        # For GNN models like LightGCN, we need to consider k-hop neighbors
-        # This is the key difference from traditional influence functions
+        # Step 2: Prepare gradient computation batches
+        # For gradient delta: Use k-hop neighbors, fill up with random samples if needed
         print(f"[GIF] Step 2: Computing gradients for {gif_k_hops}-hop influenced neighbors...")
 
-        if gif_use_true_khop:
+        if not gif_use_random_retain_samples and original_dataset is not None:
             # NEW: Use true k-hop neighbor computation (recommended for sparse graphs)
             # Build user-item sparse matrix for k-hop computation
             # IMPORTANT: Need the ORIGINAL graph (retain + forget) to find k-hop neighbors
@@ -1431,25 +1432,65 @@ class Trainer(AbstractTrainer):
 
             print(f"[GIF] Found {len(k_hop_neighbor_ids)} users in {gif_k_hops}-hop neighborhood")
 
-            # Filter retain data to only k-hop neighbors
+            # Filter retain data to only k-hop neighbors (get all k-hop samples first)
+            k_hop_batches = []
             if len(k_hop_neighbor_ids) > 0:
                 # Get batches containing only k-hop neighbors
                 k_hop_batches = self._filter_retain_data_by_users(
                     retain_train_data,
                     k_hop_neighbor_ids,
-                    max_samples=retain_samples_used_for_update
+                    max_samples=None  # Get all k-hop samples first
                 )
-                print(f"[GIF] Filtered to {len(k_hop_batches)} batches with k-hop neighbor interactions")
+
+                # Count how many samples we have from k-hop
+                k_hop_sample_count = sum(len(batch) for batch in k_hop_batches)
+                print(f"[GIF] Got {k_hop_sample_count} samples from k-hop neighbors")
+
+                # Fill up with random samples if we don't have enough
+                if k_hop_sample_count < retain_samples_used_for_update:
+                    samples_needed = retain_samples_used_for_update - k_hop_sample_count
+                    print(f"[GIF] Filling up with {samples_needed} random samples from retain data...")
+
+                    # Collect user IDs already in k-hop batches to avoid duplicates
+                    k_hop_user_ids = set()
+                    for batch in k_hop_batches:
+                        k_hop_user_ids.update(batch[retain_train_data.dataset.uid_field].numpy())
+
+                    # Sample from retain data, excluding k-hop users
+                    samples_collected = 0
+                    for batch in retain_train_data:
+                        if samples_collected >= samples_needed:
+                            break
+
+                        # Filter out users already in k-hop
+                        user_ids = batch[retain_train_data.dataset.uid_field].numpy()
+                        mask = ~np.isin(user_ids, list(k_hop_user_ids))
+
+                        if mask.any():
+                            # Create filtered batch with users not in k-hop
+                            filtered_batch_dict = {}
+                            for key in batch.interaction:
+                                value = batch.interaction[key]
+                                if isinstance(value, torch.Tensor):
+                                    filtered_batch_dict[key] = value[mask]
+                                else:
+                                    filtered_batch_dict[key] = value
+
+                            if len(filtered_batch_dict[retain_train_data.dataset.uid_field]) > 0:
+                                filtered_batch = Interaction(filtered_batch_dict)
+                                k_hop_batches.append(filtered_batch)
+                                samples_collected += len(filtered_batch)
+
+                    print(f"[GIF] Added {samples_collected} random samples. Total: {k_hop_sample_count + samples_collected}")
             else:
-                print(f"[GIF] Warning: No k-hop neighbors found, using full retain data")
-                k_hop_batches = []
+                print(f"[GIF] Warning: No k-hop neighbors found, using random sampling from retain data")
                 for batch_idx, batch in enumerate(retain_train_data):
                     if batch_idx * retain_train_data.batch_size >= retain_samples_used_for_update:
                         break
                     k_hop_batches.append(batch)
         else:
-            # OLD: Random sampling from retain data (default for backward compatibility)
-            print(f"[GIF] Using random sampling for k-hop approximation (set --gif_use_true_khop for true k-hop)")
+            # Random sampling from retain data (when gif_use_random_retain_samples=True or no original_dataset)
+            print(f"[GIF] Using random sampling from retain data")
             k_hop_batches = []
             for batch_idx, batch in enumerate(retain_train_data):
                 if batch_idx * retain_train_data.batch_size >= retain_samples_used_for_update:
@@ -1690,8 +1731,11 @@ class Trainer(AbstractTrainer):
         ceu_epsilon=0.1,
         ceu_cg_iterations=100,
         ceu_hessian_samples=1024,
+        ceu_k_hops=4,
+        ceu_use_random_retain_samples=False,
         max_norm=None,
         param_list=None,
+        original_dataset=None,
     ):
         """
         CEU: Certified Edge Unlearning for Graph Neural Networks
@@ -1716,11 +1760,14 @@ class Trainer(AbstractTrainer):
             ceu_epsilon: Epsilon parameter for (epsilon, delta)-certified unlearning guarantee
             ceu_cg_iterations: Number of conjugate gradient iterations for inverse Hessian approximation
             ceu_hessian_samples: Number of samples used for Hessian computation
+            ceu_k_hops: Number of hops for k-hop neighborhood (default: 4, based on model layers)
+            ceu_use_random_retain_samples: Use random sampling instead of k-hop (default: False)
             param_list: List of parameters to update (default: all trainable params)
+            original_dataset: Original dataset (retain + forget) for k-hop computation
         """
         print(f"\n[CEU] Starting Certified Edge Unlearning...")
         print(f"[CEU] Parameters: lambda={ceu_lambda}, sigma={ceu_sigma}, epsilon={ceu_epsilon}")
-        print(f"[CEU] CG iterations={ceu_cg_iterations}, Hessian samples={ceu_hessian_samples}")
+        print(f"[CEU] CG iterations={ceu_cg_iterations}, Hessian samples={ceu_hessian_samples}, k_hops={ceu_k_hops}")
 
         self.move_optimizer_state(self.optimizer, self.device)
         self.model.train()
@@ -1750,11 +1797,103 @@ class Trainer(AbstractTrainer):
                 for i in range(len(cur_grads)):
                     grads_forget_on_original[i] += cur_grads[i]
 
+        # Step 1.5: Prepare gradient computation batches
+        # For gradient delta: Use k-hop neighbors from clean_forget_data, fill up with retain_data if needed
+        k_hop_batches = []
+
+        if not ceu_use_random_retain_samples and original_dataset is not None:
+            print(f"[CEU] Computing {ceu_k_hops}-hop influenced neighbors (V_E_UL)...")
+
+            # Build user-item sparse matrix for k-hop computation
+            print(f"[CEU] Building user-item interaction matrix from original data...")
+            user_item_matrix = self._build_original_user_item_matrix(original_dataset, retain_train_data.dataset, forget_data.dataset)
+
+            # Get users connected to forget edges
+            forget_user_ids = set()
+            for batch in forget_data:
+                user_ids = batch[forget_data.dataset.uid_field].numpy()
+                forget_user_ids.update(user_ids)
+
+            print(f"[CEU] Finding {ceu_k_hops}-hop neighbors for {len(forget_user_ids)} users connected to forget edges...")
+
+            # Get true k-hop neighbors (V_E_UL in the paper)
+            k_hop_neighbor_ids = self._get_k_hop_neighbors(
+                list(forget_user_ids),
+                user_item_matrix,
+                k=ceu_k_hops,
+                max_neighbors=min(10000, ceu_hessian_samples * 10)  # Cap at 10x Hessian samples
+            )
+
+            print(f"[CEU] Found {len(k_hop_neighbor_ids)} users in {ceu_k_hops}-hop neighborhood (V_E_UL)")
+
+            # Filter clean_forget_data to only k-hop neighbors (get all k-hop samples first)
+            if len(k_hop_neighbor_ids) > 0:
+                k_hop_batches = self._filter_retain_data_by_users(
+                    clean_forget_data,
+                    k_hop_neighbor_ids,
+                    max_samples=None  # Get all k-hop samples first
+                )
+
+                # Count how many samples we have from k-hop
+                k_hop_sample_count = sum(len(batch) for batch in k_hop_batches)
+                print(f"[CEU] Got {k_hop_sample_count} samples from k-hop neighbors in clean_forget_data")
+
+                # Fill up with random samples from retain_train_data if we don't have enough
+                if k_hop_sample_count < ceu_hessian_samples:
+                    samples_needed = ceu_hessian_samples - k_hop_sample_count
+                    print(f"[CEU] Filling up with {samples_needed} random samples from retain_train_data...")
+
+                    # Collect user IDs already in k-hop batches to avoid duplicates
+                    k_hop_user_ids = set()
+                    for batch in k_hop_batches:
+                        k_hop_user_ids.update(batch[clean_forget_data.dataset.uid_field].numpy())
+
+                    # Sample from retain_train_data, excluding k-hop users
+                    samples_collected = 0
+                    for batch in retain_train_data:
+                        if samples_collected >= samples_needed:
+                            break
+
+                        # Filter out users already in k-hop
+                        user_ids = batch[retain_train_data.dataset.uid_field].numpy()
+                        mask = ~np.isin(user_ids, list(k_hop_user_ids))
+
+                        if mask.any():
+                            # Create filtered batch with users not in k-hop
+                            filtered_batch_dict = {}
+                            for key in batch.interaction:
+                                value = batch.interaction[key]
+                                if isinstance(value, torch.Tensor):
+                                    filtered_batch_dict[key] = value[mask]
+                                else:
+                                    filtered_batch_dict[key] = value
+
+                            if len(filtered_batch_dict[retain_train_data.dataset.uid_field]) > 0:
+                                filtered_batch = Interaction(filtered_batch_dict)
+                                k_hop_batches.append(filtered_batch)
+                                samples_collected += len(filtered_batch)
+
+                    print(f"[CEU] Added {samples_collected} random samples. Total: {k_hop_sample_count + samples_collected}")
+            else:
+                print(f"[CEU] Warning: No k-hop neighbors found, using random sampling from retain_train_data")
+                # Fallback to random sampling from retain_train_data
+                for batch_idx, batch in enumerate(retain_train_data):
+                    if batch_idx * retain_train_data.batch_size >= ceu_hessian_samples:
+                        break
+                    k_hop_batches.append(batch)
+        else:
+            # Use clean_forget_data directly (when ceu_use_random_retain_samples=True or no original_dataset)
+            print(f"[CEU] Using clean_forget_data directly (random sampling)")
+            for batch_idx, batch in enumerate(clean_forget_data):
+                if batch_idx * clean_forget_data.batch_size >= ceu_hessian_samples:
+                    break
+                k_hop_batches.append(batch)
+
         # Gradients on remaining graph (without removed edges)
         # IMPORTANT: For GNN models, we need to mask the forget edges in the graph structure
         print(f"[CEU] Computing gradients on REMAINING graph (forget edges excluded)...")
         grads_forget_on_remaining = []
-        influenced_sample_count = min(len(clean_forget_data.dataset), ceu_hessian_samples)
+        influenced_sample_count = len(k_hop_batches) if k_hop_batches else 1
 
         # Check if model has graph structure that needs modification
         has_graph, graph_attr_name = self._model_has_graph_structure(self.model)
@@ -1773,9 +1912,7 @@ class Trainer(AbstractTrainer):
             with self._temporarily_replace_graph(self.model, graph_attr_name, modified_adj_matrix):
                 # Compute gradients on remaining graph (WITHOUT forget edges)
                 # This corresponds to grad(L(theta; V_E_UL, E\E_UL)) in the paper
-                for batch_idx, interaction in enumerate(clean_forget_data):
-                    if batch_idx * clean_forget_data.batch_size >= influenced_sample_count:
-                        break
+                for interaction in k_hop_batches:
                     interaction = interaction.to(self.device)
 
                     cur_grads_remaining = self._batch_grad(
@@ -1794,9 +1931,7 @@ class Trainer(AbstractTrainer):
         else:
             print(f"[CEU] Model has no graph structure. Computing gradients normally...")
             # For models without graph structure (e.g., BPR), compute normally
-            for batch_idx, interaction in enumerate(clean_forget_data):
-                if batch_idx * clean_forget_data.batch_size >= influenced_sample_count:
-                    break
+            for interaction in k_hop_batches:
                 interaction = interaction.to(self.device)
 
                 cur_grads_remaining = self._batch_grad(
@@ -1964,8 +2099,11 @@ class Trainer(AbstractTrainer):
         idea_delta=0.01,
         idea_iterations=100,
         idea_hessian_samples=1024,
+        idea_k_hops=4,
+        idea_use_random_retain_samples=False,
         max_norm=None,
         param_list=None,
+        original_dataset=None,
     ):
         """
         IDEA: A Flexible Framework of Certified Unlearning for Graph Neural Networks
@@ -1992,12 +2130,15 @@ class Trainer(AbstractTrainer):
             idea_delta: Delta parameter for (epsilon, delta)-certified unlearning
             idea_iterations: Number of iterations for stochastic Hessian inverse estimation
             idea_hessian_samples: Number of samples used for Hessian computation
+            idea_k_hops: Number of hops for k-hop neighborhood (default: 4, based on model layers)
+            idea_use_random_retain_samples: Use random sampling instead of k-hop (default: False)
             max_norm: Maximum norm for gradient clipping (optional, prevents gradient explosion)
             param_list: List of parameters to update (default: all trainable params)
+            original_dataset: Original dataset (retain + forget) for k-hop computation
         """
         print(f"\n[IDEA] Starting Flexible and Certified Unlearning...")
         print(f"[IDEA] Parameters: damping={idea_damping}, sigma={idea_sigma}, epsilon={idea_epsilon}, delta={idea_delta}")
-        print(f"[IDEA] Iterations={idea_iterations}, Hessian samples={idea_hessian_samples}")
+        print(f"[IDEA] Iterations={idea_iterations}, Hessian samples={idea_hessian_samples}, k_hops={idea_k_hops}")
 
         self.move_optimizer_state(self.optimizer, self.device)
         self.model.train()
@@ -2059,6 +2200,98 @@ class Trainer(AbstractTrainer):
 
         print(f"[IDEA] Gradient difference norm: {sum(g.norm().item() for g in delta_grads):.6f}")
 
+        # Step 1.5: Prepare Hessian computation batches
+        # For Hessian: Use k-hop neighbors first, then fill up with random samples if needed
+        k_hop_batches = []
+
+        if not idea_use_random_retain_samples and original_dataset is not None:
+            print(f"[IDEA] Computing {idea_k_hops}-hop influenced neighbors for Hessian computation...")
+
+            # Build user-item sparse matrix for k-hop computation
+            print(f"[IDEA] Building user-item interaction matrix from original data...")
+            user_item_matrix = self._build_original_user_item_matrix(original_dataset, retain_train_data.dataset, forget_data.dataset)
+
+            # Get forget user IDs
+            forget_user_ids = set()
+            for batch in forget_data:
+                user_ids = batch[forget_data.dataset.uid_field].numpy()
+                forget_user_ids.update(user_ids)
+
+            print(f"[IDEA] Finding {idea_k_hops}-hop neighbors for {len(forget_user_ids)} forget users...")
+
+            # Get true k-hop neighbors (V1, V2, V3, V4 in the paper)
+            k_hop_neighbor_ids = self._get_k_hop_neighbors(
+                list(forget_user_ids),
+                user_item_matrix,
+                k=idea_k_hops,
+                max_neighbors=min(10000, idea_hessian_samples * 10)  # Cap at 10x Hessian samples
+            )
+
+            print(f"[IDEA] Found {len(k_hop_neighbor_ids)} users in {idea_k_hops}-hop neighborhood")
+
+            # Filter retain data to only k-hop neighbors (no limit here, get all k-hop samples)
+            if len(k_hop_neighbor_ids) > 0:
+                k_hop_batches = self._filter_retain_data_by_users(
+                    retain_train_data,
+                    k_hop_neighbor_ids,
+                    max_samples=None  # Get all k-hop samples first
+                )
+
+                # Count how many samples we have from k-hop
+                k_hop_sample_count = sum(len(batch) for batch in k_hop_batches)
+                print(f"[IDEA] Got {k_hop_sample_count} samples from k-hop neighbors")
+
+                # Fill up with random samples if we don't have enough for Hessian computation
+                if k_hop_sample_count < idea_hessian_samples:
+                    samples_needed = idea_hessian_samples - k_hop_sample_count
+                    print(f"[IDEA] Filling up with {samples_needed} random samples from retain data...")
+
+                    # Collect user IDs already in k-hop batches to avoid duplicates
+                    k_hop_user_ids = set()
+                    for batch in k_hop_batches:
+                        k_hop_user_ids.update(batch[retain_train_data.dataset.uid_field].numpy())
+
+                    # Sample from retain data, excluding k-hop users
+                    samples_collected = 0
+                    for batch in retain_train_data:
+                        if samples_collected >= samples_needed:
+                            break
+
+                        # Filter out users already in k-hop
+                        user_ids = batch[retain_train_data.dataset.uid_field].numpy()
+                        mask = ~np.isin(user_ids, list(k_hop_user_ids))
+
+                        if mask.any():
+                            # Create filtered batch with users not in k-hop
+                            filtered_batch_dict = {}
+                            for key in batch.interaction:
+                                value = batch.interaction[key]
+                                if isinstance(value, torch.Tensor):
+                                    filtered_batch_dict[key] = value[mask]
+                                else:
+                                    filtered_batch_dict[key] = value
+
+                            if len(filtered_batch_dict[retain_train_data.dataset.uid_field]) > 0:
+                                filtered_batch = Interaction(filtered_batch_dict)
+                                k_hop_batches.append(filtered_batch)
+                                samples_collected += len(filtered_batch)
+
+                    print(f"[IDEA] Added {samples_collected} random samples. Total: {k_hop_sample_count + samples_collected}")
+            else:
+                print(f"[IDEA] Warning: No k-hop neighbors found, using random sampling from retain data")
+                # Fallback to random sampling
+                for batch_idx, batch in enumerate(retain_train_data):
+                    if batch_idx * retain_train_data.batch_size >= idea_hessian_samples:
+                        break
+                    k_hop_batches.append(batch)
+        else:
+            # Use random sampling from retain data (when idea_use_random_retain_samples=True or no original_dataset)
+            print(f"[IDEA] Using random sampling for Hessian computation")
+            for batch_idx, batch in enumerate(retain_train_data):
+                if batch_idx * retain_train_data.batch_size >= idea_hessian_samples:
+                    break
+                k_hop_batches.append(batch)
+
         # Step 2: Estimate Hessian inverse using stochastic estimation (Theorem 1)
         # H^{-1} * delta_grads using iterative method to avoid explicit Hessian computation
         print(f"[IDEA] Step 2: Estimating H^{-1} * delta_grads using stochastic method...")
@@ -2068,18 +2301,8 @@ class Trainer(AbstractTrainer):
 
         # Stochastic estimation (similar to Neumann series but with sampling)
         for iteration in range(idea_iterations):
-            # Sample batch from retain data for Hessian computation
-            retain_iter = iter(retain_train_data)
-            sampled_batches = []
-            samples_collected = 0
-
-            while samples_collected < min(idea_hessian_samples, len(retain_train_data.dataset)):
-                try:
-                    batch = next(retain_iter)
-                    sampled_batches.append(batch)
-                    samples_collected += len(batch)
-                except StopIteration:
-                    break
+            # Use k-hop filtered batches for Hessian computation
+            sampled_batches = k_hop_batches
 
             # Compute HVP: H * h_inv_delta
             hvp = self._compute_hvp_on_batches(
@@ -3116,8 +3339,8 @@ class Trainer(AbstractTrainer):
                 gif_damping=self.config["gif_damping"] if "gif_damping" in self.config and self.config["gif_damping"] is not None else 0.01,
                 gif_scale_factor=self.config["gif_scale_factor"] if "gif_scale_factor" in self.config and self.config["gif_scale_factor"] is not None else 1000,
                 gif_iterations=self.config["gif_iterations"] if "gif_iterations" in self.config and self.config["gif_iterations"] is not None else 100,
-                gif_k_hops=self.config["gif_k_hops"] if "gif_k_hops" in self.config and self.config["gif_k_hops"] is not None else 2,
-                gif_use_true_khop=self.config["gif_use_true_khop"] if "gif_use_true_khop" in self.config and self.config["gif_use_true_khop"] is not None else False,
+                gif_k_hops=self.config["gif_k_hops"] if "gif_k_hops" in self.config and self.config["gif_k_hops"] is not None else 4,
+                gif_use_random_retain_samples=self.config["gif_use_random_retain_samples"] if "gif_use_random_retain_samples" in self.config and self.config["gif_use_random_retain_samples"] is not None else False,
                 max_norm=max_norm,
                 param_list=param_list,
                 original_dataset=original_dataset,
@@ -3142,8 +3365,11 @@ class Trainer(AbstractTrainer):
                 ceu_epsilon=self.config["ceu_epsilon"] if "ceu_epsilon" in self.config and self.config["ceu_epsilon"] is not None else 0.1,
                 ceu_cg_iterations=self.config["ceu_cg_iterations"] if "ceu_cg_iterations" in self.config and self.config["ceu_cg_iterations"] is not None else 100,
                 ceu_hessian_samples=self.config["ceu_hessian_samples"] if "ceu_hessian_samples" in self.config and self.config["ceu_hessian_samples"] is not None else 1024,
+                ceu_k_hops=self.config["ceu_k_hops"] if "ceu_k_hops" in self.config and self.config["ceu_k_hops"] is not None else 4,
+                ceu_use_random_retain_samples=self.config["ceu_use_random_retain_samples"] if "ceu_use_random_retain_samples" in self.config and self.config["ceu_use_random_retain_samples"] is not None else False,
                 max_norm=max_norm,
                 param_list=param_list,
+                original_dataset=original_dataset,
             )
         elif unlearning_algorithm == "idea":
             # IDEA: Flexible Framework of Certified Unlearning for GNNs
@@ -3166,8 +3392,11 @@ class Trainer(AbstractTrainer):
                 idea_delta=self.config["idea_delta"] if "idea_delta" in self.config and self.config["idea_delta"] is not None else 0.01,
                 idea_iterations=self.config["idea_iterations"] if "idea_iterations" in self.config and self.config["idea_iterations"] is not None else 100,
                 idea_hessian_samples=self.config["idea_hessian_samples"] if "idea_hessian_samples" in self.config and self.config["idea_hessian_samples"] is not None else 1024,
+                idea_k_hops=self.config["idea_k_hops"] if "idea_k_hops" in self.config and self.config["idea_k_hops"] is not None else 4,
+                idea_use_random_retain_samples=self.config["idea_use_random_retain_samples"] if "idea_use_random_retain_samples" in self.config and self.config["idea_use_random_retain_samples"] is not None else False,
                 max_norm=max_norm,
                 param_list=param_list,
+                original_dataset=original_dataset,
             )
         elif unlearning_algorithm == "seif":
             # SEIF: Self-Influence Guided Data Attribution
