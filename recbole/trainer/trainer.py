@@ -1624,11 +1624,26 @@ class Trainer(AbstractTrainer):
                 loss = loss_func(interaction)
                 grads = torch.autograd.grad(loss, param_list, create_graph=True)
 
+                # Check for NaN/Inf in first-order gradients
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                    print("[GIF HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
+                    continue
+
                 # Compute dot product of gradients with v
                 dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
 
+                # Check for NaN/Inf in dot product
+                if torch.isnan(dot_product) or torch.isinf(dot_product):
+                    print(f"[GIF HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
+                    continue
+
                 # Compute gradients of dot product (this gives Hv)
                 hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
+
+                # Check for NaN/Inf in HVP output
+                if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
+                    print("[GIF HVP] Warning: NaN or Inf detected in Hessian-vector product, skipping this batch")
+                    continue
 
                 for i in range(len(hvp_acc)):
                     hvp_acc[i] += hvp[i].detach() / len(hessian_samples)
@@ -1646,9 +1661,15 @@ class Trainer(AbstractTrainer):
         # Initialize: H^{-1}_0 * v = v
         h_inv_v = [v.clone() for v in delta_grads]
 
+        prev_diff = None
         for iteration in range(gif_iterations):
             # Compute H * H^{-1}_{t-1} * v
             h_times_h_inv_v = compute_hvp(h_inv_v)
+
+            # Check for NaN/Inf in HVP result
+            if any(torch.isnan(h).any() or torch.isinf(h).any() for h in h_times_h_inv_v):
+                print(f"[GIF] Warning: NaN/Inf detected in HVP at iteration {iteration}, stopping iterations")
+                break
 
             # Update: H^{-1}_t * v = v + H^{-1}_{t-1} * v - lambda*H * H^{-1}_{t-1} * v
             new_h_inv_v = []
@@ -1656,15 +1677,51 @@ class Trainer(AbstractTrainer):
                 new_val = delta_grads[i] + h_inv_v[i] - lambda_scaled * h_times_h_inv_v[i]
                 new_h_inv_v.append(new_val)
 
+            # Check for NaN/Inf in new estimate BEFORE accepting it
+            if any(torch.isnan(h).any() or torch.isinf(h).any() for h in new_h_inv_v):
+                print(f"[GIF] Warning: NaN/Inf detected in update at iteration {iteration}, stopping iterations")
+                break
+
             # Check convergence
             if iteration % 10 == 0 and iteration > 0:
                 diff = sum((new_h_inv_v[i] - h_inv_v[i]).norm().item() for i in range(len(param_list)))
+
+                # Check for NaN/Inf in convergence metric
+                if math.isnan(diff) or math.isinf(diff):
+                    print(f"[GIF] Warning: Divergence detected (NaN/inf diff), stopping iterations")
+                    break
+
                 print(f"[GIF] Iteration {iteration}/{gif_iterations}, convergence diff: {diff:.6f}")
+
+                # Detect rapid divergence: if diff is very large and growing exponentially
+                if prev_diff is not None and diff > 1e6:
+                    if diff > prev_diff * 100:
+                        print(f"[GIF] Warning: Rapid divergence detected (diff={diff:.6f}, prev={prev_diff:.6f}), stopping iterations")
+                        break
+
+                # Early stopping if converged
+                if diff < 1e-6:
+                    print(f"[GIF] Converged at iteration {iteration}")
+                    h_inv_v = new_h_inv_v
+                    break
+
+                prev_diff = diff
 
             h_inv_v = new_h_inv_v
 
         # Step 6: Apply parameter update: theta_new = theta_old + H^{-1} * delta_L
         print(f"[GIF] Step 6: Applying parameter updates...")
+
+        # Final validation: verify h_inv_v is valid before applying updates
+        if any(torch.isnan(h).any() or torch.isinf(h).any() for h in h_inv_v):
+            print(f"[GIF] Warning: Final h_inv_v contains NaN or Inf. Skipping parameter update.")
+            return
+
+        # Check if update is meaningful
+        h_inv_v_norm = sum(h.norm().item()**2 for h in h_inv_v)**0.5
+        if h_inv_v_norm < 1e-15:
+            print(f"[GIF] Warning: Update norm is negligible (norm={h_inv_v_norm}). Skipping parameter update.")
+            return
 
         # Optionally clip updates if max_norm is specified
         if max_norm is not None:
@@ -1678,6 +1735,11 @@ class Trainer(AbstractTrainer):
             for p, delta_p in zip(param_list, h_inv_v):
                 # Apply the update (note: we ADD because we want to remove influence)
                 p.data += delta_p
+
+        # Verify model parameters are still valid after update
+        if any(torch.isnan(p).any() or torch.isinf(p).any() for p in param_list):
+            print(f"[GIF] Error: Model parameters became NaN or Inf after update. This should not happen!")
+            raise RuntimeError("Model parameters corrupted during GIF update")
 
         # Step 7: Fine-tune on retain data to stabilize
         print(f"[GIF] Step 7: Fine-tuning on retain data ({retain_samples_used_for_update} samples)...")
@@ -1975,6 +2037,7 @@ class Trainer(AbstractTrainer):
         def compute_hvp(v):
             """Compute Hessian-Vector Product H*v"""
             hvp_acc = [torch.zeros_like(p) for p in param_list]
+            valid_samples = 0
             for interaction in hessian_samples:
                 self.model.zero_grad()
                 loss = loss_func(interaction)
@@ -1985,14 +2048,35 @@ class Trainer(AbstractTrainer):
 
                 grads = torch.autograd.grad(loss, param_list, create_graph=True)
 
+                # Check for NaN/Inf in first-order gradients
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                    print("[CEU HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
+                    continue
+
                 # Compute dot product of gradients with v
                 dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
+
+                # Check for NaN/Inf in dot product
+                if torch.isnan(dot_product) or torch.isinf(dot_product):
+                    print(f"[CEU HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
+                    continue
 
                 # Compute gradients of dot product (this gives Hv)
                 hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
 
+                # Check for NaN/Inf in HVP output
+                if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
+                    print("[CEU HVP] Warning: NaN or Inf detected in Hessian-vector product, skipping this batch")
+                    continue
+
                 for i in range(len(hvp_acc)):
-                    hvp_acc[i] += hvp[i].detach() / len(hessian_samples)
+                    hvp_acc[i] += hvp[i].detach()
+                valid_samples += 1
+
+            # Average over valid samples
+            if valid_samples > 0:
+                for i in range(len(hvp_acc)):
+                    hvp_acc[i] /= valid_samples
 
             # Add damping term: lambda * I
             if ceu_lambda > 0:
@@ -2016,13 +2100,35 @@ class Trainer(AbstractTrainer):
             # Compute Ap
             Ap = compute_hvp(p)
 
+            # Check for NaN/Inf in HVP result
+            if any(torch.isnan(h).any() or torch.isinf(h).any() for h in Ap):
+                print(f"[CEU] Warning: NaN/Inf detected in HVP at CG iteration {iteration}, stopping CG solver")
+                break
+
             # Compute alpha = r^T r / p^T A p
             pAp = sum((p_i * Ap_i).sum() for p_i, Ap_i in zip(p, Ap))
-            alpha = rs_old / (pAp + 1e-10)
+
+            # Check for NaN/Inf or near-zero denominator
+            if torch.isnan(pAp) or torch.isinf(pAp):
+                print(f"[CEU] Warning: NaN/Inf detected in pAp at CG iteration {iteration}, stopping CG solver")
+                break
+            if abs(pAp.item()) < 1e-10:
+                print(f"[CEU] Warning: Near-zero pAp ({pAp.item()}) at CG iteration {iteration}, stopping CG solver")
+                break
+
+            alpha = rs_old / pAp
 
             # Update x = x + alpha * p
             for i in range(len(x)):
                 x[i] = x[i] + alpha * p[i]
+
+            # Check for NaN/Inf in x
+            if any(torch.isnan(xi).any() or torch.isinf(xi).any() for xi in x):
+                print(f"[CEU] Warning: NaN/Inf detected in solution x at CG iteration {iteration}, stopping CG solver")
+                # Revert last update
+                for i in range(len(x)):
+                    x[i] = x[i] - alpha * p[i]
+                break
 
             # Update r = r - alpha * Ap
             for i in range(len(r)):
@@ -2033,6 +2139,12 @@ class Trainer(AbstractTrainer):
             # Check convergence
             if iteration % 10 == 0:
                 residual_norm = torch.sqrt(rs_new).item()
+
+                # Check for NaN/Inf in convergence metric
+                if math.isnan(residual_norm) or math.isinf(residual_norm):
+                    print(f"[CEU] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
+                    break
+
                 print(f"[CEU] CG Iteration {iteration}/{ceu_cg_iterations}, residual norm: {residual_norm:.6f}")
 
                 if residual_norm < 1e-6:
@@ -2050,6 +2162,17 @@ class Trainer(AbstractTrainer):
 
         # x now contains H^{-1} * Delta (the influence estimate I_E_UL)
         influence_estimate = x
+
+        # Final validation: verify influence_estimate is valid
+        if any(torch.isnan(h).any() or torch.isinf(h).any() for h in influence_estimate):
+            print(f"[CEU] Warning: Final influence estimate contains NaN or Inf. Skipping parameter update.")
+            return
+
+        # Check if update is meaningful
+        influence_norm = sum(h.norm().item()**2 for h in influence_estimate)**0.5
+        if influence_norm < 1e-15:
+            print(f"[CEU] Warning: Influence estimate norm is negligible (norm={influence_norm}). Skipping parameter update.")
+            return
 
         # Optionally clip influence estimate if max_norm is specified (before adding noise)
         if max_norm is not None:
@@ -2078,6 +2201,11 @@ class Trainer(AbstractTrainer):
             for p, noisy_delta_p in zip(param_list, noisy_influence_estimate):
                 # Scale by 1/|V| as per Equation 11 in the paper
                 p.data -= noisy_delta_p / num_nodes
+
+        # Verify model parameters are still valid after update
+        if any(torch.isnan(p).any() or torch.isinf(p).any() for p in param_list):
+            print(f"[CEU] Error: Model parameters became NaN or Inf after update. This should not happen!")
+            raise RuntimeError("Model parameters corrupted during CEU update")
 
         print(f"[CEU] Unlearning complete with (ε={ceu_epsilon}, δ)-certified guarantee!")
 
@@ -2297,65 +2425,101 @@ class Trainer(AbstractTrainer):
                     break
                 k_hop_batches.append(batch)
 
-        # Step 2: Estimate Hessian inverse using stochastic estimation (Theorem 1)
-        # H^{-1} * delta_grads using iterative method to avoid explicit Hessian computation
-        print(f"[IDEA] Step 2: Estimating H^{-1} * delta_grads using stochastic method...")
+        # Step 2: Estimate H^{-1} * delta_grads using Conjugate Gradients
+        # Solve (H + damping*I) * x = delta_grads for x
+        print(f"[IDEA] Step 2: Computing H^{-1} * delta_grads using Conjugate Gradient...")
 
-        # Initialize with delta_grads
-        h_inv_delta = [v.clone() for v in delta_grads]
-
-        # Stochastic estimation (similar to Neumann series but with sampling)
-        prev_diff = None
-        for iteration in range(idea_iterations):
-            # Use k-hop filtered batches for Hessian computation
-            sampled_batches = k_hop_batches
-
-            # Compute HVP: H * h_inv_delta
+        # Define HVP function with damping for CG solver
+        def compute_hvp_with_damping(v):
+            """Compute (H + damping*I) * v"""
             hvp = self._compute_hvp_on_batches(
-                sampled_batches,
-                h_inv_delta,
+                k_hop_batches,
+                v,
                 param_list,
                 loss_func
             )
-
             if hvp is None:
-                print(f"[IDEA] Warning: HVP computation failed at iteration {iteration}, using current estimate")
+                return None
+            # Add damping term: lambda * I
+            return [hvp[i] + idea_damping * v[i] for i in range(len(param_list))]
+
+        # Initialize CG: x_0 = 0, r_0 = delta_grads, p_0 = r_0
+        x = [torch.zeros_like(d) for d in delta_grads]
+        r = [d.clone() for d in delta_grads]
+        p = [d.clone() for d in delta_grads]
+
+        rs_old = sum((r_i * r_i).sum() for r_i in r)
+
+        for iteration in range(idea_iterations):
+            # Compute Ap = (H + damping*I) * p
+            Ap = compute_hvp_with_damping(p)
+
+            if Ap is None:
+                print(f"[IDEA] Warning: HVP computation failed at CG iteration {iteration}, stopping CG solver")
                 break
 
-            # Neumann iteration: h_inv_delta = h_inv_delta + (I - H/damping) * h_inv_delta
-            # This approximates (H + damping*I)^{-1} * delta_grads
-            scaling = 1.0 / idea_damping
-            h_inv_delta_new = [
-                h_inv_delta[i] + scaling * (delta_grads[i] - hvp[i])
-                for i in range(len(param_list))
-            ]
-
-            # Check for NaN/Inf in the new estimate BEFORE accepting it
-            if any(torch.isnan(h).any() or torch.isinf(h).any() for h in h_inv_delta_new):
-                print(f"[IDEA] Warning: NaN/inf detected in update at iteration {iteration}, stopping iterations")
+            # Check for NaN/Inf in HVP result
+            if any(torch.isnan(h).any() or torch.isinf(h).any() for h in Ap):
+                print(f"[IDEA] Warning: NaN/Inf detected in HVP at CG iteration {iteration}, stopping CG solver")
                 break
 
-            # Check convergence every 10 iterations
-            if iteration % 10 == 0 and iteration > 0:
-                diff = sum((h_inv_delta_new[i] - hvp[i]).norm().item() for i in range(len(param_list)))
+            # Compute alpha = r^T r / p^T A p
+            pAp = sum((p_i * Ap_i).sum() for p_i, Ap_i in zip(p, Ap))
+
+            # Check for NaN/Inf or near-zero denominator
+            if torch.isnan(pAp) or torch.isinf(pAp):
+                print(f"[IDEA] Warning: NaN/Inf detected in pAp at CG iteration {iteration}, stopping CG solver")
+                break
+            if abs(pAp.item()) < 1e-10:
+                print(f"[IDEA] Warning: Near-zero pAp ({pAp.item()}) at CG iteration {iteration}, stopping CG solver")
+                break
+
+            alpha = rs_old / pAp
+
+            # Update x = x + alpha * p
+            for i in range(len(x)):
+                x[i] = x[i] + alpha * p[i]
+
+            # Check for NaN/Inf in x
+            if any(torch.isnan(xi).any() or torch.isinf(xi).any() for xi in x):
+                print(f"[IDEA] Warning: NaN/Inf detected in solution x at CG iteration {iteration}, stopping CG solver")
+                # Revert last update
+                for i in range(len(x)):
+                    x[i] = x[i] - alpha * p[i]
+                break
+
+            # Update r = r - alpha * Ap
+            for i in range(len(r)):
+                r[i] = r[i] - alpha * Ap[i]
+
+            rs_new = sum((r_i * r_i).sum() for r_i in r)
+
+            # Check convergence
+            if iteration % 10 == 0:
+                residual_norm = torch.sqrt(rs_new).item()
 
                 # Check for NaN/Inf in convergence metric
-                if math.isnan(diff) or math.isinf(diff):
-                    print(f"[IDEA] Warning: Divergence detected (NaN/inf diff), stopping iterations")
+                if math.isnan(residual_norm) or math.isinf(residual_norm):
+                    print(f"[IDEA] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
                     break
 
-                print(f"[IDEA] Iteration {iteration}/{idea_iterations}, convergence diff: {diff:.6f}")
+                print(f"[IDEA] CG Iteration {iteration}/{idea_iterations}, residual norm: {residual_norm:.6f}")
 
-                # Detect rapid divergence: if diff is very large and growing exponentially
-                if prev_diff is not None and diff > 1e6:
-                    if diff > prev_diff * 100:
-                        print(f"[IDEA] Warning: Rapid divergence detected (diff={diff:.6f}, prev={prev_diff:.6f}), stopping iterations")
-                        break
+                if residual_norm < 1e-6:
+                    print(f"[IDEA] CG converged at iteration {iteration}")
+                    break
 
-                prev_diff = diff
+            # Compute beta = r_new^T r_new / r_old^T r_old
+            beta = rs_new / (rs_old + 1e-10)
 
-            # Only update h_inv_delta if checks passed
-            h_inv_delta = h_inv_delta_new
+            # Update p = r + beta * p
+            for i in range(len(p)):
+                p[i] = r[i] + beta * p[i]
+
+            rs_old = rs_new
+
+        # x now contains H^{-1} * delta_grads
+        h_inv_delta = x
 
         # Step 3: Apply parameter update with certification noise (Theorem 3)
         print(f"[IDEA] Step 3: Applying certified parameter updates...")
