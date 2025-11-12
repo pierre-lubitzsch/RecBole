@@ -428,10 +428,36 @@ def run_recbole(
             trainer.model.eval()
             with torch.no_grad():
                 for user_id in unlearned_user_ids:
-                    # Create interaction for this user
-                    interaction = {
-                        'user_id': torch.tensor([user_id], device=trainer.device)
-                    }
+                    # Create interaction for this user based on task type
+                    if config['task_type'] == 'SBR':
+                        # For sequential models, we need to provide item sequence
+                        # Get the user's interaction data from the dataset
+                        # The dataset.inter_feat is sorted by uid and time, and after augmentation
+                        # each row contains the history up to that point
+                        user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                        user_indices = torch.where(user_mask)[0]
+
+                        if len(user_indices) == 0:
+                            # User has no interactions, skip
+                            continue
+
+                        # Get the last interaction which contains the longest/complete sequence
+                        last_idx = user_indices[-1].item()
+
+                        # Get the item sequence fields
+                        item_seq_field = trainer.model.ITEM_SEQ
+                        item_seq_len_field = trainer.model.ITEM_SEQ_LEN
+
+                        interaction = {
+                            dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                            item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
+                            item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                        }
+                    else:
+                        # For CF models, only user_id is needed
+                        interaction = {
+                            'user_id': torch.tensor([user_id], device=trainer.device)
+                        }
 
                     # Get predictions
                     scores = trainer.model.full_sort_predict(interaction)
@@ -1179,10 +1205,36 @@ def unlearn_recbole(
                 all_user_topk_items = {}
                 with torch.no_grad():
                     for user_id in unlearned_user_ids:
-                        # Create interaction for this user
-                        interaction = {
-                            'user_id': torch.tensor([user_id], device=trainer.device)
-                        }
+                        # Create interaction for this user based on task type
+                        if config['task_type'] == 'SBR':
+                            # For sequential models, we need to provide item sequence
+                            # Get the user's interaction data from the dataset
+                            # The dataset.inter_feat is sorted by uid and time, and after augmentation
+                            # each row contains the history up to that point
+                            user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                            user_indices = torch.where(user_mask)[0]
+
+                            if len(user_indices) == 0:
+                                # User has no interactions, skip
+                                continue
+
+                            # Get the last interaction which contains the longest/complete sequence
+                            last_idx = user_indices[-1].item()
+
+                            # Get the item sequence fields
+                            item_seq_field = trainer.model.ITEM_SEQ
+                            item_seq_len_field = trainer.model.ITEM_SEQ_LEN
+
+                            interaction = {
+                                dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                                item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
+                                item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                            }
+                        else:
+                            # For CF models, only user_id is needed
+                            interaction = {
+                                'user_id': torch.tensor([user_id], device=trainer.device)
+                            }
 
                         # Get predictions
                         scores = trainer.model.full_sort_predict(interaction)
