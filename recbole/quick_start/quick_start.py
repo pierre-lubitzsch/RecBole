@@ -604,20 +604,22 @@ def unlearn_recbole(
 
     print("loaded dataset")
 
-    if config.task_type != "CF":
+    if config.task_type == "SBR":
         unlearning_samples = pd.read_csv(
             unlearning_samples_path,
             sep="\t",
-            names=["user_id", "item_id", "timestamp"],
+            names=["user_id", "session_id", "item_id", "rating", "timestamp"],
             header=0,
         )
-    else:
+    elif config.task_type == "CF":
         unlearning_samples = pd.read_csv(
             unlearning_samples_path,
             sep="\t",
             names=["user_id", "item_id", "rating", "timestamp"],
             header=0,
         )
+    else:
+        raise ValueError(f"Unsupported task_type: {config.task_type}. Only 'SBR' and 'CF' are supported.")
 
     print("loaded unlearning samples")
 
