@@ -1691,6 +1691,11 @@ class Trainer(AbstractTrainer):
                     print(f"[GIF] Warning: Divergence detected (NaN/inf diff), stopping iterations")
                     break
 
+                # Check for divergence: diff too large (similar to SCIF/CEU/IDEA)
+                if diff > 1e10:
+                    print(f"[GIF] Warning: Convergence diff too large ({diff:.2e}), stopping iterations")
+                    break
+
                 print(f"[GIF] Iteration {iteration}/{gif_iterations}, convergence diff: {diff:.6f}")
 
                 # Detect rapid divergence: if diff is very large and growing exponentially
