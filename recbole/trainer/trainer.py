@@ -2198,6 +2198,11 @@ class Trainer(AbstractTrainer):
         # This is the gradient of the objective change due to unlearning
         delta_grads = [clean_g - forget_g for clean_g, forget_g in zip(clean_grads, forget_grads)]
 
+        # Check for NaN/Inf in gradient computation before proceeding
+        if any(torch.isnan(g).any() or torch.isinf(g).any() for g in delta_grads):
+            print("[IDEA] Warning: NaN or Inf detected in gradient difference computation, skipping unlearning")
+            return
+
         print(f"[IDEA] Gradient difference norm: {sum(g.norm().item() for g in delta_grads):.6f}")
 
         # Step 1.5: Prepare Hessian computation batches
@@ -2300,6 +2305,7 @@ class Trainer(AbstractTrainer):
         h_inv_delta = [v.clone() for v in delta_grads]
 
         # Stochastic estimation (similar to Neumann series but with sampling)
+        prev_diff = None
         for iteration in range(idea_iterations):
             # Use k-hop filtered batches for Hessian computation
             sampled_batches = k_hop_batches
@@ -2319,18 +2325,51 @@ class Trainer(AbstractTrainer):
             # Neumann iteration: h_inv_delta = h_inv_delta + (I - H/damping) * h_inv_delta
             # This approximates (H + damping*I)^{-1} * delta_grads
             scaling = 1.0 / idea_damping
-            h_inv_delta = [
+            h_inv_delta_new = [
                 h_inv_delta[i] + scaling * (delta_grads[i] - hvp[i])
                 for i in range(len(param_list))
             ]
 
+            # Check for NaN/Inf in the new estimate BEFORE accepting it
+            if any(torch.isnan(h).any() or torch.isinf(h).any() for h in h_inv_delta_new):
+                print(f"[IDEA] Warning: NaN/inf detected in update at iteration {iteration}, stopping iterations")
+                break
+
             # Check convergence every 10 iterations
             if iteration % 10 == 0 and iteration > 0:
-                diff = sum((h_inv_delta[i] - hvp[i]).norm().item() for i in range(len(param_list)))
+                diff = sum((h_inv_delta_new[i] - hvp[i]).norm().item() for i in range(len(param_list)))
+
+                # Check for NaN/Inf in convergence metric
+                if math.isnan(diff) or math.isinf(diff):
+                    print(f"[IDEA] Warning: Divergence detected (NaN/inf diff), stopping iterations")
+                    break
+
                 print(f"[IDEA] Iteration {iteration}/{idea_iterations}, convergence diff: {diff:.6f}")
+
+                # Detect rapid divergence: if diff is very large and growing exponentially
+                if prev_diff is not None and diff > 1e6:
+                    if diff > prev_diff * 100:
+                        print(f"[IDEA] Warning: Rapid divergence detected (diff={diff:.6f}, prev={prev_diff:.6f}), stopping iterations")
+                        break
+
+                prev_diff = diff
+
+            # Only update h_inv_delta if checks passed
+            h_inv_delta = h_inv_delta_new
 
         # Step 3: Apply parameter update with certification noise (Theorem 3)
         print(f"[IDEA] Step 3: Applying certified parameter updates...")
+
+        # Final check: verify h_inv_delta is valid before applying updates
+        if any(torch.isnan(h).any() or torch.isinf(h).any() for h in h_inv_delta):
+            print(f"[IDEA] Warning: Final h_inv_delta contains NaN or Inf. Skipping parameter update.")
+            return
+
+        # Check if update is meaningful (similar to SCIF check)
+        h_inv_delta_norm = sum(h.norm().item()**2 for h in h_inv_delta)**0.5
+        if h_inv_delta_norm < 1e-15:
+            print(f"[IDEA] Warning: Update norm is negligible (norm={h_inv_delta_norm}). Skipping parameter update.")
+            return
 
         # Optionally clip updates if max_norm is specified (before computing certification parameters)
         if max_norm is not None:
@@ -2362,6 +2401,11 @@ class Trainer(AbstractTrainer):
                 # Apply update: theta_new = theta_old + (1/m) * H^{-1} * delta_grads + noise
                 # The 1/m factor is handled by normalization in gradient computation
                 p.data += delta_p + noise
+
+        # Verify model parameters are still valid after update
+        if any(torch.isnan(p).any() or torch.isinf(p).any() for p in param_list):
+            print(f"[IDEA] Error: Model parameters became NaN or Inf after update. This should not happen!")
+            raise RuntimeError("Model parameters corrupted during IDEA update")
 
         # Step 4: Fine-tune on retain data to stabilize
         print(f"[IDEA] Step 4: Fine-tuning on retain data...")
@@ -2434,13 +2478,28 @@ class Trainer(AbstractTrainer):
         if any(g is None for g in grads):
             return None
 
+        # Check for NaN/Inf in gradients (before HVP computation)
+        if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+            print("[IDEA HVP] NaN or Inf detected in first-order gradients")
+            return None
+
         # Compute HVP: H * v = grad(grad^T * v)
         grad_vector_dot = sum((g * v).sum() for g, v in zip(grads, vectors))
+
+        # Check for NaN/Inf in dot product
+        if torch.isnan(grad_vector_dot) or torch.isinf(grad_vector_dot):
+            print(f"[IDEA HVP] NaN or Inf detected in dot product (dot={grad_vector_dot})")
+            return None
 
         hvp = torch.autograd.grad(grad_vector_dot, param_list, allow_unused=True)
 
         # Check for None in HVP
         if any(h is None for h in hvp):
+            return None
+
+        # Check for NaN/Inf in HVP output
+        if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
+            print("[IDEA HVP] NaN or Inf detected in Hessian-vector product output")
             return None
 
         return list(hvp)
