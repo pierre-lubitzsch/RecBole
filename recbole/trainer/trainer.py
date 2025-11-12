@@ -2145,6 +2145,11 @@ class Trainer(AbstractTrainer):
                     print(f"[CEU] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
                     break
 
+                # Check for divergence: residual norm too large (similar to SCIF)
+                if residual_norm > 1e10:
+                    print(f"[CEU] Warning: Residual norm too large ({residual_norm:.2e}), stopping CG solver")
+                    break
+
                 print(f"[CEU] CG Iteration {iteration}/{ceu_cg_iterations}, residual norm: {residual_norm:.6f}")
 
                 if residual_norm < 1e-6:
@@ -2501,6 +2506,11 @@ class Trainer(AbstractTrainer):
                 # Check for NaN/Inf in convergence metric
                 if math.isnan(residual_norm) or math.isinf(residual_norm):
                     print(f"[IDEA] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
+                    break
+
+                # Check for divergence: residual norm too large (similar to SCIF)
+                if residual_norm > 1e10:
+                    print(f"[IDEA] Warning: Residual norm too large ({residual_norm:.2e}), stopping CG solver")
                     break
 
                 print(f"[IDEA] CG Iteration {iteration}/{idea_iterations}, residual norm: {residual_norm:.6f}")
