@@ -114,7 +114,7 @@ def main():
         "--unlearning_sample_selection_method",
         type=str,
         default="popular",
-        choices=["random", "popular", "unpopular", "sensitive_category_meat", "sensitive_category_baby", "sensitive_category_alcohol"],
+        # choices=["random", "popular", "unpopular", "sensitive_category_meat", "sensitive_category_baby", "sensitive_category_alcohol"],
         help="how should the forget set be chosen (what type of interactions appear there)"
     )
     parser.add_argument(
@@ -134,7 +134,7 @@ def main():
         "--sensitive_category",
         type=str,
         default=None,
-        choices=["baby", "meat", "alcohol"],
+        # choices=["baby", "meat", "alcohol"],
         help="When choosing sensitive items to unlearn, choose which category"
     )
     parser.add_argument(
