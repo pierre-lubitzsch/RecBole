@@ -176,6 +176,7 @@ if __name__ == "__main__":
     }
     if args.task_type is not None:
         config_dict["task_type"] = args.task_type
+        # Note: MAE and RMSE metrics for CF tasks are set in add_cf_metrics() in quick_start.py
     if args.epochs is not None:
         config_dict["epochs"] = args.epochs
     if args.max_training_hours is not None:
