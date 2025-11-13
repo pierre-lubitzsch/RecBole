@@ -9,7 +9,7 @@
 #   ./run_baselines.sh
 
 models=("Random" "Pop" "ItemKNN" "EASE")
-datasets=("amazon_reviews_grocery_and_gourmet_food")
+datasets=("amazon_reviews_grocery_and_gourmet_food" "goodreads" "movielens")
 seed=2
 
 # Get the Python executable from the current environment
@@ -26,7 +26,7 @@ for model in "${models[@]}"; do
         model_lower=$(echo "$model" | tr '[:upper:]' '[:lower:]')
         config_file="config_${model_lower}.yaml"
         session_name="${model_lower}"
-        log_file="cluster_log/${model_lower}_${dataset}_seed${seed}.log"
+        log_file="baselines_log/${model_lower}_${dataset}_seed${seed}.log"
 
         echo "Starting tmux session '${session_name}' for model: $model"
 
