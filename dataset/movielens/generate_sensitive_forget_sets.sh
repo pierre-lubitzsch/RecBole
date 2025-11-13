@@ -4,12 +4,14 @@
 dataset="movielens.inter"
 rating_threshold=3.5
 
-# Define sensitive movie categories and their genre/tag keywords
-# You can customize these categories and keywords
-declare -a categories=("violence")
-declare -A categories_to_genres=(
-    ["violence"]="Horror Thriller War Crime"
-)
+# Define sensitive movie categories
+# Available categories: violence, extreme_violence, mental_health, explicit
+# The new multi-signal detection uses titles, genres, and tags for better accuracy
+declare -a categories=("violence" "mental_health")
+
+# For stricter matching, you can use:
+# declare -a categories=("extreme_violence")
+# Or customize min_signals per category in the script
 
 # Random seeds for reproducibility
 seeds=(2 3 5 7 11)
@@ -17,13 +19,24 @@ seeds=(2 3 5 7 11)
 # Forget ratios (fraction of dataset to unlearn)
 forget_ratios=(0.0001 0.00001 0.000001)
 
-# Step 1: Identify sensitive movies for each category
-echo "Step 1: Identifying sensitive movies by genre..."
+# Step 1: Identify sensitive movies for each category using multi-signal detection
+echo "Step 1: Identifying sensitive movies using multi-signal detection..."
+echo "  (Searching in titles, genres, and user tags)"
 for category in "${categories[@]}"; do
     echo "  Processing category: ${category}"
+    
+    # Use the new category-based approach with multi-signal detection
+    # This requires at least 2 signals (e.g., genre + title, or title + tag)
+    # to reduce false positives from popular movies
     python identify_sensitive_movies.py \
-        --genres ${categories_to_genres[$category]} \
+        --category "${category}" \
         --output "sensitive_asins_${category}.txt"
+    
+    # For even stricter matching, you can increase min_signals:
+    # python identify_sensitive_movies.py \
+    #     --category "${category}" \
+    #     --min-signals 3 \
+    #     --output "sensitive_asins_${category}.txt"
 done
 
 # Step 2: Copy generate_forget_sets.py if not present

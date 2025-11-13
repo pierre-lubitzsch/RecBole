@@ -13,10 +13,9 @@ eval_args:
   group_by: user
   order: TO
   split: {LS: 'valid_and_test'}
-  mode: full
-  metrics: [Recall, NDCG, Hit, MRR]
-  topk: [10, 20]
-  valid_metric: Recall@20
+  mode: labeled
+  metrics: [MAE, RMSE]
+  valid_metric: RMSE
 
 # eval_args:
 #   group_by: user

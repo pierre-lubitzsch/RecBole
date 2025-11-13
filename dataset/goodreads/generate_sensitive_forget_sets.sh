@@ -4,21 +4,10 @@
 dataset="goodreads.inter"
 rating_threshold=3.0
 
-# Define sensitive book categories and their keywords
-# You can customize these categories and keywords
+# Define sensitive book categories
+# Available categories: mental_health, violence, explicit
+# The new multi-signal detection uses titles, descriptions, shelves, and genres for better accuracy
 declare -a categories=("mental_health")
-declare -A categories_to_keywords=(
-    ["mental_health"]="suicide suicidal depression depressed anxiety anxious ptsd trauma traumatic abuse abused violence violent rape sexual assault molest addiction alcoholism drug psychiatric psychological therapy counseling bipolar schizophrenia psychosis grief bereavement harm cutting disorder anorexia bulimia"
-)
-
-# Alternative: Use genre-based categories (commented out by default)
-# Uncomment the lines below to use genre-based search instead
-# declare -a categories=("romance" "horror")
-# declare -A categories_to_genres=(
-#     ["romance"]="romance erotica"
-#     ["horror"]="horror thriller"
-# )
-# use_genres=true
 
 # Random seeds for reproducibility
 seeds=(2 3 5 7 11)
@@ -26,26 +15,32 @@ seeds=(2 3 5 7 11)
 # Forget ratios (fraction of dataset to unlearn)
 forget_ratios=(0.0001 0.00001 0.000001)
 
-# Determine search mode
-use_genres=${use_genres:-false}
-
-# Step 1: Identify sensitive books for each category
-echo "Step 1: Identifying sensitive books..."
+# Step 1: Identify sensitive books for each category using multi-signal detection
+echo "Step 1: Identifying sensitive books using multi-signal detection..."
+echo "  (Searching in titles, descriptions, shelves, and genres)"
 for category in "${categories[@]}"; do
     echo "  Processing category: ${category}"
 
-    if [ "$use_genres" = true ]; then
-        # Genre-based search
-        python identify_sensitive_books.py \
-            --use-genres \
-            --genres ${categories_to_genres[$category]} \
-            --output "sensitive_asins_${category}.txt"
-    else
-        # Keyword-based search (default)
-        python identify_sensitive_books.py \
-            --keywords ${categories_to_keywords[$category]} \
-            --output "sensitive_asins_${category}.txt"
+    sensitive_file="sensitive_asins_${category}.txt"
+
+    # Skip if file already exists
+    if [ -f "$sensitive_file" ]; then
+        echo "    ${sensitive_file} already exists, skipping..."
+        continue
     fi
+
+    # Use the new category-based approach with multi-signal detection
+    # This requires at least 2 signals (e.g., title + description, or title + shelf)
+    # to reduce false positives from popular books
+    python identify_sensitive_books.py \
+        --category "${category}" \
+        --output "$sensitive_file"
+    
+    # For even stricter matching, you can increase min_signals:
+    # python identify_sensitive_books.py \
+    #     --category "${category}" \
+    #     --min-signals 3 \
+    #     --output "$sensitive_file"
 done
 
 # Step 2: Copy generate_forget_sets.py if not present
