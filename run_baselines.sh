@@ -25,7 +25,7 @@ for model in "${models[@]}"; do
     for dataset in "${datasets[@]}"; do
         model_lower=$(echo "$model" | tr '[:upper:]' '[:lower:]')
         config_file="config_${model_lower}.yaml"
-        session_name="${model_lower}"
+        session_name="${model_lower}_${dataset}"
         log_file="baselines_log/${model_lower}_${dataset}_seed${seed}.log"
 
         echo "Starting tmux session '${session_name}' for model: $model"
