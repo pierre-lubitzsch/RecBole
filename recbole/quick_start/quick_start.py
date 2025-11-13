@@ -304,18 +304,43 @@ def run_recbole(
     # trainer loading and initialization
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
 
-    # model training
-    best_valid_score, best_valid_result = trainer.fit(
-        train_data,
-        valid_data,
-        saved=saved,
-        show_progress=False,
-        retrain_flag=retrain_flag,
-    )
+    # Check if eval_only mode is enabled
+    eval_only = "eval_only" in config and config["eval_only"]
+    
+    if eval_only:
+        # Skip training and load model from checkpoint
+        logger.info("Eval-only mode: skipping training and loading model from checkpoint")
+        
+        # Construct the model file path (same logic as in trainer)
+        # Use the trainer's saved_model_file which is already constructed correctly
+        model_file_path = trainer.saved_model_file
+        
+        if not os.path.exists(model_file_path):
+            raise FileNotFoundError(f"Model file not found: {model_file_path}. Expected path: {model_file_path}")
+        
+        logger.info(f"Loading model from: {model_file_path}")
+        checkpoint = torch.load(model_file_path, map_location=config["device"])
+        trainer.model.load_state_dict(checkpoint["state_dict"])
+        if "other_parameter" in checkpoint:
+            trainer.model.load_other_parameter(checkpoint["other_parameter"])
+        trainer.model.eval()
+        
+        # Set dummy values for best_valid_score and best_valid_result since we didn't train
+        best_valid_score = None
+        best_valid_result = None
+    else:
+        # model training
+        best_valid_score, best_valid_result = trainer.fit(
+            train_data,
+            valid_data,
+            saved=saved,
+            show_progress=False,
+            retrain_flag=retrain_flag,
+        )
 
     # model evaluation
     test_result = trainer.evaluate(
-        test_data, load_best_model=saved, show_progress=False,
+        test_data, load_best_model=(saved and not eval_only) or eval_only, show_progress=False,
     )
 
     environment_tb = get_environment(config)

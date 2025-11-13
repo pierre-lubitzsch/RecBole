@@ -136,6 +136,11 @@ if __name__ == "__main__":
         default=None,
         help="maximum number of hours for training/retraining (will stop before next epoch if time budget exceeded)",
     )
+    parser.add_argument(
+        "--eval_only",
+        action="store_true",
+        help="if set, skip training and only run evaluation on a saved model",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -175,6 +180,8 @@ if __name__ == "__main__":
         config_dict["epochs"] = args.epochs
     if args.max_training_hours is not None:
         config_dict["max_training_hours"] = args.max_training_hours
+    if args.eval_only:
+        config_dict["eval_only"] = True
 
     run(
         args.model,
