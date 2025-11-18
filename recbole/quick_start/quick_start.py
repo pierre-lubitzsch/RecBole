@@ -114,36 +114,6 @@ def run(
     return res
 
 
-def add_cf_metrics(config_dict):
-    """Set metrics for CF tasks to only use MAE and RMSE (value-based metrics).
-    
-    For CF tasks, we use only value-based metrics (MAE, RMSE).
-    For non-CF tasks, ranking-based metrics are used (from config file defaults).
-    
-    RMSE is set as the validation metric for early stopping, as it penalizes
-    large errors more than MAE, which is generally preferred for model selection.
-    
-    Also sets evaluation mode to 'labeled' for CF tasks, as 'full' mode is
-    incompatible with value-based metrics.
-    """
-    if config_dict is None:
-        return
-    if "task_type" in config_dict and config_dict["task_type"] == "CF":
-        # For CF tasks, use only value-based metrics: MAE and RMSE
-        config_dict["metrics"] = ["MAE", "RMSE"]
-        # Set RMSE as validation metric for early stopping (lower is better)
-        # RMSE is preferred over MAE as it penalizes large errors more
-        if "valid_metric" not in config_dict:
-            config_dict["valid_metric"] = "RMSE"
-        
-        # Set evaluation mode to 'labeled' for value-based metrics
-        # 'full' mode is incompatible with value-based metrics
-        if "eval_args" not in config_dict:
-            config_dict["eval_args"] = {}
-        # Always override mode for CF tasks to ensure compatibility with value-based metrics
-        config_dict["eval_args"]["mode"] = "labeled"
-
-
 def k_subsets_exact_np(user_list, k=8):
     """
     Efficiently create k subsets where each sample appears in exactly k/2 subsets.
@@ -216,9 +186,6 @@ def run_recbole(
         config_dict = {}
     if 'topk' not in config_dict:
         config_dict['topk'] = [10, 20]
-    
-    # Add MAE and RMSE metrics for CF tasks
-    add_cf_metrics(config_dict)
 
     config = Config(
         model=model,
@@ -641,9 +608,6 @@ def unlearn_recbole(
     # configurations initialization
     if config_dict is None:
         config_dict = {}
-    
-    # Add MAE and RMSE metrics for CF tasks
-    add_cf_metrics(config_dict)
     
     config = Config(
         model=model,
