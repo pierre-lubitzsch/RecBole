@@ -54,6 +54,7 @@ class TopkMetric(AbstractMetric):
 
     def __init__(self, config):
         super().__init__(config)
+        self.config = config
         self.topk = config["topk"]
 
     def used_info(self, dataobject):
@@ -61,8 +62,25 @@ class TopkMetric(AbstractMetric):
         and number of positive items for each user.
         """
         rec_mat = dataobject.get("rec.topk")
-        topk_idx, pos_len_list = torch.split(rec_mat, [max(self.topk), 1], dim=1)
-        return topk_idx.to(torch.bool).numpy(), pos_len_list.squeeze(-1).numpy()
+        max_topk = max(self.topk)
+        
+        # Check if this is NBR task using task_type from config
+        is_nbr = (self.config["task_type"] if "task_type" in self.config else None) == "NBR"
+        
+        if is_nbr:
+            # For NBR: pos_len is [batch_size, max_topk + 1] matrix
+            # Column 0: actual_target_length (all items in target basket)
+            # Columns 1 to max_topk: min(k, actual_target_length) for k=1 to max_topk
+            # This represents the number of items in the first k items of the ground truth basket
+            topk_idx, pos_len_matrix = torch.split(rec_mat, [max_topk, max_topk + 1], dim=1)
+            # Extract pos_len: column 0 is actual_length, columns 1+ are min(k, actual_length)
+            pos_len_list = pos_len_matrix.numpy()  # [n_users, max_topk + 1]
+        else:
+            # Standard: pos_len is [batch_size, 1] vector
+            topk_idx, pos_len_list = torch.split(rec_mat, [max_topk, 1], dim=1)
+            pos_len_list = pos_len_list.squeeze(-1).numpy()  # [n_users]
+        
+        return topk_idx.to(torch.bool).numpy(), pos_len_list
 
     def topk_result(self, metric, value):
         """Match the metric value to the `k` and put them in `dictionary` form.

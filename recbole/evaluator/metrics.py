@@ -60,6 +60,9 @@ class Hit(TopkMetric):
         return metric_dict
 
     def metric_info(self, pos_index):
+        # Hit@k: Returns 1 if at least one of top k predictions is in the ground truth, 0 otherwise
+        # For NBR: pos_index already contains only items from first k items of target basket (filtered in collector)
+        # For standard: pos_index contains all positive items
         result = np.cumsum(pos_index, axis=1)
         return (result > 0).astype(int)
 
@@ -157,7 +160,23 @@ class Recall(TopkMetric):
         return metric_dict
 
     def metric_info(self, pos_index, pos_len):
-        return np.cumsum(pos_index, axis=1) / pos_len.reshape(-1, 1)
+        # For NBR: pos_len is 2D [n_users, max_topk + 1]
+        # Column 0: actual_length (all items in target basket)
+        # Columns 1 to max_topk: min(k, actual_length) for k=1 to max_topk
+        # For standard: pos_len is 1D [n_users], reshape to [n_users, 1]
+        if pos_len.ndim == 2:
+            # NBR case: Compare top k predictions against ALL items in target basket (original RecBole behavior)
+            # For Recall@k, denominator should be actual_length (all items in target basket)
+            # pos_len[:, 0] contains actual_length (all items)
+            actual_length = pos_len[:, 0]  # actual_target_length for each user (ignoring padding)
+            cumsum_pos = np.cumsum(pos_index, axis=1)
+            result = np.zeros_like(cumsum_pos, dtype=np.float)
+            for k_idx in range(cumsum_pos.shape[1]):
+                # Use actual_length as denominator (all items in target basket)
+                result[:, k_idx] = np.where(actual_length > 0, cumsum_pos[:, k_idx] / actual_length, 0)
+            return result
+        else:
+            return np.cumsum(pos_index, axis=1) / pos_len.reshape(-1, 1)
 
 
 class NDCG(TopkMetric):
@@ -184,22 +203,58 @@ class NDCG(TopkMetric):
         return metric_dict
 
     def metric_info(self, pos_index, pos_len):
-        len_rank = np.full_like(pos_len, pos_index.shape[1])
-        idcg_len = np.where(pos_len > len_rank, len_rank, pos_len)
+        # For NBR: pos_len is 2D [n_users, max_topk + 1]
+        # Column 0: actual_length (all items in target basket)
+        # Columns 1 to max_topk: min(k, actual_length) for k=1 to max_topk
+        # For standard: pos_len is 1D [n_users]
+        if pos_len.ndim == 2:
+            # NBR case: calculate NDCG for each k separately
+            # Compare top k predictions against ALL items in target basket (original RecBole behavior)
+            # IDCG uses min(k, actual_length) items (matching A-Next-Basket-Recommendation-Reality-Check framework)
+            actual_length = pos_len[:, 0]  # actual_target_length for each user
+            result = np.zeros_like(pos_index, dtype=np.float)
+            for k_idx in range(pos_index.shape[1]):
+                k = k_idx + 1
+                # IDCG length is min(k, actual_length) - if basket has fewer than k items, use all items
+                idcg_len = np.minimum(actual_length, k)
+                
+                # Calculate IDCG for each user
+                iranks = np.arange(1, k + 1)
+                idcg_base = np.cumsum(1.0 / np.log2(iranks + 1))  # IDCG for positions 1 to k
+                idcg_per_user = np.zeros(len(actual_length))
+                for row, actual_len in enumerate(idcg_len):
+                    if actual_len > 0:
+                        # Use IDCG for min(k, actual_length) items
+                        idcg_per_user[row] = idcg_base[min(int(actual_len) - 1, k - 1)]
+                
+                # Calculate DCG for top k predictions
+                ranks = np.arange(1, k + 1)
+                dcg_weights = 1.0 / np.log2(ranks + 1)
+                dcg_per_user = np.zeros(len(actual_length))
+                for row in range(len(actual_length)):
+                    dcg = np.sum(np.where(pos_index[row, :k], dcg_weights[:k], 0))
+                    dcg_per_user[row] = dcg
+                
+                result[:, k_idx] = np.where(idcg_per_user > 0, dcg_per_user / idcg_per_user, 0)
+            return result
+        else:
+            # Standard case
+            len_rank = np.full_like(pos_len, pos_index.shape[1])
+            idcg_len = np.where(pos_len > len_rank, len_rank, pos_len)
 
-        iranks = np.zeros_like(pos_index, dtype=np.float)
-        iranks[:, :] = np.arange(1, pos_index.shape[1] + 1)
-        idcg = np.cumsum(1.0 / np.log2(iranks + 1), axis=1)
-        for row, idx in enumerate(idcg_len):
-            idcg[row, idx:] = idcg[row, idx - 1]
+            iranks = np.zeros_like(pos_index, dtype=np.float)
+            iranks[:, :] = np.arange(1, pos_index.shape[1] + 1)
+            idcg = np.cumsum(1.0 / np.log2(iranks + 1), axis=1)
+            for row, idx in enumerate(idcg_len):
+                idcg[row, idx:] = idcg[row, idx - 1]
 
-        ranks = np.zeros_like(pos_index, dtype=np.float)
-        ranks[:, :] = np.arange(1, pos_index.shape[1] + 1)
-        dcg = 1.0 / np.log2(ranks + 1)
-        dcg = np.cumsum(np.where(pos_index, dcg, 0), axis=1)
+            ranks = np.zeros_like(pos_index, dtype=np.float)
+            ranks[:, :] = np.arange(1, pos_index.shape[1] + 1)
+            dcg = 1.0 / np.log2(ranks + 1)
+            dcg = np.cumsum(np.where(pos_index, dcg, 0), axis=1)
 
-        result = dcg / idcg
-        return result
+            result = dcg / idcg
+            return result
 
 
 class Precision(TopkMetric):

@@ -208,7 +208,17 @@ class Trainer(AbstractTrainer):
             )
 
         if learner.lower() == "adam":
-            optimizer = optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+            # Allow custom Adam parameters from config (for matching original implementations)
+            beta1 = self.config["adam_beta1"] if "adam_beta1" in self.config else 0.9
+            beta2 = self.config["adam_beta2"] if "adam_beta2" in self.config else 0.999
+            eps = self.config["adam_eps"] if "adam_eps" in self.config else 1e-8
+            optimizer = optim.Adam(
+                params, 
+                lr=learning_rate, 
+                weight_decay=weight_decay,
+                betas=(beta1, beta2),
+                eps=eps
+            )
         elif learner.lower() == "adamw":
             optimizer = optim.AdamW(params, lr=learning_rate, weight_decay=weight_decay)
         elif learner.lower() == "sgd":

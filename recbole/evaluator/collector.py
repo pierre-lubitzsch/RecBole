@@ -148,6 +148,19 @@ class Collector(object):
             positive_u(Torch.Tensor): the row index of positive items for each user.
             positive_i(Torch.Tensor): the positive item id for each user.
         """
+        # Check if this is NBR task and we need to use first k items from target basket
+        is_nbr = (self.config["task_type"] if "task_type" in self.config else None) == "NBR"
+        target_item_list_field = None
+        if is_nbr:
+            # Check if target_item_list field exists (from NextBasketDataset)
+            # Default field name used by NextBasketDataset
+            target_item_list_field = "target_item_list"
+            # Verify the field exists in interaction
+            try:
+                _ = interaction[target_item_list_field]
+            except (KeyError, AttributeError):
+                target_item_list_field = None
+        
         if self.register.need("rec.items"):
 
             # get topk
@@ -161,11 +174,102 @@ class Collector(object):
             _, topk_idx = torch.topk(
                 scores_tensor, max(self.topk), dim=-1
             )  # n_users x k
-            pos_matrix = torch.zeros_like(scores_tensor, dtype=torch.int)
-            pos_matrix[positive_u, positive_i] = 1
-            pos_len_list = pos_matrix.sum(dim=1, keepdim=True)
-            pos_idx = torch.gather(pos_matrix, dim=1, index=topk_idx)
-            result = torch.cat((pos_idx, pos_len_list), dim=1)
+            
+            # For NBR: use first k items from target basket for each k
+            if is_nbr and target_item_list_field is not None:
+                # Get target_item_list for each user in the batch
+                try:
+                    target_lists = interaction[target_item_list_field]  # [batch_size, max_basket_size]
+                    # Debug: verify field is accessible and has correct shape
+                    if not isinstance(target_lists, torch.Tensor):
+                        # Field exists but is not a tensor - try to convert or fallback
+                        target_item_list_field = None
+                        is_nbr = False
+                except (KeyError, AttributeError) as e:
+                    # Fallback to standard behavior if target_item_list not available
+                    if not hasattr(self, '_nbr_field_not_found_logged'):
+                        import logging
+                        logger = logging.getLogger()
+                        logger.warning(f"[NBR Debug] target_item_list field not found in interaction. "
+                                      f"Available fields: {list(interaction.interaction.keys()) if hasattr(interaction, 'interaction') else 'N/A'}. "
+                                      f"Error: {e}")
+                        self._nbr_field_not_found_logged = True
+                    target_item_list_field = None
+                    is_nbr = False
+                
+                if target_item_list_field is not None:
+                    # Ensure target_lists is on the correct device
+                    target_lists = target_lists.to(self.device)
+                    batch_size = target_lists.shape[0]
+                    max_topk = max(self.topk)
+                    
+                    # Verify target_lists has expected shape [batch_size, max_basket_size]
+                    if len(target_lists.shape) != 2:
+                        # Fallback if shape is unexpected
+                        target_item_list_field = None
+                        is_nbr = False
+                    else:
+                        # Debug: Print first batch to verify data format (remove after debugging)
+                        if batch_size > 0:
+                            sample_target = target_lists[0]
+                            sample_actual = sample_target[sample_target >= 0]  # Filter padding (-1)
+                            # Only print once per evaluation to avoid spam
+                            if not hasattr(self, '_nbr_debug_printed'):
+                                import logging
+                                logger = logging.getLogger()
+                                logger.info(f"[NBR Debug] target_item_list shape: {target_lists.shape}, "
+                                           f"sample first user target items (first 10 non-padding): {sample_actual[:10].tolist()}, "
+                                           f"sample first user raw values (first 20): {sample_target[:20].tolist()}, "
+                                           f"num_items in scores: {scores_tensor.shape[1]}, "
+                                           f"min/max in target_lists: {target_lists.min().item()}/{target_lists.max().item()}")
+                                self._nbr_debug_printed = True
+                        # Build pos_matrix marking ALL items in target basket as positive (original RecBole behavior)
+                        # Compare top k predictions against ALL items in target basket (ignoring padding)
+                        pos_matrix = torch.zeros_like(scores_tensor, dtype=torch.int)
+                        num_items = scores_tensor.shape[1]
+                        
+                        # For each user, mark ALL items in their target basket as positive
+                        # Note: target_item_list contains remapped item IDs (after _remap_ID_all)
+                        # Format: [batch_size, max_basket_size] tensor with item IDs (-1 is padding)
+                        actual_lengths = (target_lists >= 0).sum(dim=1)  # [batch_size] - count non-padding items (>= 0)
+                        
+                        for u_idx in range(batch_size):
+                            target_items = target_lists[u_idx]  # [max_basket_size] with structure: [item1, item2, ..., -1, -1]
+                            # Filter out padding (-1) to get actual items
+                            actual_items = target_items[target_items >= 0]
+                            
+                            # Mark ALL items in target basket as positive (not just first k)
+                            for item_id_tensor in actual_items:
+                                item_id = int(item_id_tensor.item() if isinstance(item_id_tensor, torch.Tensor) else item_id_tensor)
+                                # Ensure valid index (item IDs should be within [0, num_items) range)
+                                if 0 <= item_id < num_items:
+                                    pos_matrix[u_idx, item_id] = 1
+                        
+                        # For NBR, we need both:
+                        # 1. actual_target_length (for Recall: compare against all items in target basket)
+                        # 2. min(k, actual_target_length) (for NDCG: IDCG uses min(k, actual_length))
+                        # We'll store: [actual_length, min(1, actual_length), min(2, actual_length), ..., min(max_topk, actual_length)]
+                        pos_len_matrix = torch.zeros(batch_size, max_topk + 1, dtype=torch.int, device=self.device)
+                        pos_len_matrix[:, 0] = actual_lengths  # Store actual_length in first column
+                        for k_idx, k in enumerate(range(1, max_topk + 1)):
+                            k_tensor = torch.tensor(k, dtype=torch.int, device=self.device)
+                            pos_len_matrix[:, k_idx + 1] = torch.minimum(actual_lengths, k_tensor)
+                        
+                        pos_idx = torch.gather(pos_matrix, dim=1, index=topk_idx)
+                        # Store pos_len_matrix flattened: [pos_idx (max_topk), actual_length (1), min(1,actual_length) (1), ..., min(max_topk,actual_length) (1)]
+                        result = torch.cat((pos_idx, pos_len_matrix), dim=1)
+                else:
+                    # Fallback: if target_item_list not available, use standard behavior
+                    is_nbr = False
+            
+            if not is_nbr:
+                # Standard behavior: use all positive items
+                pos_matrix = torch.zeros_like(scores_tensor, dtype=torch.int)
+                pos_matrix[positive_u, positive_i] = 1
+                pos_len_list = pos_matrix.sum(dim=1, keepdim=True)
+                pos_idx = torch.gather(pos_matrix, dim=1, index=topk_idx)
+                result = torch.cat((pos_idx, pos_len_list), dim=1)
+            
             self.data_struct.update_tensor("rec.topk", result)
 
         if self.register.need("rec.meanrank"):

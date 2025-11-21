@@ -141,6 +141,24 @@ if __name__ == "__main__":
         action="store_true",
         help="if set, skip training and only run evaluation on a saved model",
     )
+    parser.add_argument(
+        "--adam_beta1",
+        type=float,
+        default=None,
+        help="Adam optimizer beta1 parameter (default: 0.9)",
+    )
+    parser.add_argument(
+        "--adam_beta2",
+        type=float,
+        default=None,
+        help="Adam optimizer beta2 parameter (default: 0.999)",
+    )
+    parser.add_argument(
+        "--adam_eps",
+        type=float,
+        default=None,
+        help="Adam optimizer epsilon parameter (default: 1e-8)",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -182,6 +200,12 @@ if __name__ == "__main__":
         config_dict["max_training_hours"] = args.max_training_hours
     if args.eval_only:
         config_dict["eval_only"] = True
+    if args.adam_beta1 is not None:
+        config_dict["adam_beta1"] = args.adam_beta1
+    if args.adam_beta2 is not None:
+        config_dict["adam_beta2"] = args.adam_beta2
+    if args.adam_eps is not None:
+        config_dict["adam_eps"] = args.adam_eps
 
     run(
         args.model,

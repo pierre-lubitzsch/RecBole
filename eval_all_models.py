@@ -46,6 +46,21 @@ def parse_model_filename(filename):
             "eval_type": "retraining"
         }
     
+    # Pattern for unlearning with epoch and checkpoint: model_{model}_seed_{seed}_dataset_{dataset}_unlearning_algorithm_{algorithm}_unlearning_fraction_{fraction}_unlearning_sample_selection_method_{method}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{idx}.pth
+    unlearn_with_checkpoint_pattern = r"model_(\w+)_seed_(\d+)_dataset_([\w_]+)_unlearning_algorithm_(\w+)_unlearning_fraction_([\d.]+)_unlearning_sample_selection_method_(.+?)_unlearn_epoch_(\d+)_retrain_checkpoint_idx_to_match_(\d+)\.pth"
+    match = re.match(unlearn_with_checkpoint_pattern, basename)
+    if match:
+        return {
+            "model": match.group(1),
+            "seed": int(match.group(2)),
+            "dataset": match.group(3),
+            "unlearning_algorithm": match.group(4),
+            "unlearning_fraction": float(match.group(5)),
+            "unlearning_sample_selection_method": match.group(6),
+            "retrain_checkpoint_idx_to_match": int(match.group(8)),
+            "eval_type": "unlearning"
+        }
+    
     # Pattern for unlearning: model_{model}_seed_{seed}_dataset_{dataset}_unlearning_algorithm_{algorithm}_unlearning_fraction_{fraction}_unlearning_sample_selection_method_{method}.pth
     unlearn_pattern = r"model_(\w+)_seed_(\d+)_dataset_([\w_]+)_unlearning_algorithm_(\w+)_unlearning_fraction_([\d.]+)_unlearning_sample_selection_method_([\w_]+)\.pth"
     match = re.match(unlearn_pattern, basename)
@@ -57,6 +72,7 @@ def parse_model_filename(filename):
             "unlearning_algorithm": match.group(4),
             "unlearning_fraction": float(match.group(5)),
             "unlearning_sample_selection_method": match.group(6),
+            "retrain_checkpoint_idx_to_match": None,  # Default to None, will use 3 if needed
             "eval_type": "unlearning"
         }
     
@@ -88,8 +104,18 @@ def parse_model_filename(filename):
     return None
 
 
-def find_models_for_dataset(dataset, checkpoint_dir="saved"):
-    """Find all model files for a given dataset."""
+def find_models_for_dataset(dataset, checkpoint_dir="saved", model_filter=None):
+    """Find all model files for a given dataset.
+    
+    Args:
+        dataset: Dataset name to filter by
+        checkpoint_dir: Directory containing model checkpoints
+        model_filter: Optional list of model names to filter by. If None, returns all models.
+                     Checks if any model name appears in the model filename.
+    
+    Returns:
+        List of parsed model info dictionaries
+    """
     if not os.path.exists(checkpoint_dir):
         print(f"Checkpoint directory {checkpoint_dir} does not exist")
         return []
@@ -102,6 +128,13 @@ def find_models_for_dataset(dataset, checkpoint_dir="saved"):
     for model_file in model_files:
         parsed = parse_model_filename(model_file)
         if parsed and parsed["dataset"] == dataset:
+            # If model_filter is provided, check if any model name appears in filename
+            if model_filter is not None:
+                basename = os.path.basename(model_file)
+                # Check if any of the specified models appears in the filename
+                if not any(model_name in basename for model_name in model_filter):
+                    continue
+            
             parsed["model_file"] = model_file
             models.append(parsed)
     
@@ -144,11 +177,30 @@ def build_eval_command(model_info, config_dir="."):
             "--unlearning_sample_selection_method", method
         ])
     elif eval_type == "unlearning":
+        # Extract category from unlearning_sample_selection_method if it's a sensitive category
+        method = model_info["unlearning_sample_selection_method"]
+        if method.startswith("sensitive_category_"):
+            # Extract category name (e.g., "sensitive_category_health" -> "health")
+            category = method.replace("sensitive_category_", "").split("_")[0]
+        else:
+            category = ""
+        
+        # Get checkpoint index, default to 3 (final checkpoint) if not specified
+        checkpoint_idx = model_info.get("retrain_checkpoint_idx_to_match")
+        if checkpoint_idx is None:
+            checkpoint_idx = 3  # Default to final checkpoint
+        
         cmd.extend([
             "--unlearning_fraction", str(model_info["unlearning_fraction"]),
-            "--unlearning_sample_selection_method", model_info["unlearning_sample_selection_method"],
+            "--unlearning_sample_selection_method", method,
+            "--retrain_checkpoint_idx_to_match", str(checkpoint_idx),
             "--task_type", "CF"
         ])
+        
+        # Add sensitive_category if it's a sensitive category unlearning
+        # This is needed for the dataset filtering logic to find the correct unlearning samples file
+        if category:
+            cmd.extend(["--sensitive_category", category])
     elif eval_type == "spam":
         cmd.extend([
             "--unlearning_fraction", str(model_info["unlearning_fraction"]),
@@ -176,12 +228,17 @@ def main():
     parser.add_argument("--config_dir", type=str, default=".", help="Directory containing config files")
     parser.add_argument("--cuda_visible_devices", type=str, default="0", help="CUDA_VISIBLE_DEVICES value (e.g., '0' or '1,2')")
     parser.add_argument("--log_dir", type=str, default="eval_logs", help="Directory to save evaluation logs")
+    parser.add_argument("--models", "-m", type=str, nargs="+", default=None, 
+                       help="Filter models by name(s). If not specified, evaluates all models. "
+                            "Checks if model name appears in filename (e.g., --models LightGCN BPR SGL)")
     
     args = parser.parse_args()
     
     # Find all models for this dataset
     print(f"Finding models for dataset: {args.dataset}")
-    models = find_models_for_dataset(args.dataset, args.checkpoint_dir)
+    if args.models:
+        print(f"Filtering by models: {args.models}")
+    models = find_models_for_dataset(args.dataset, args.checkpoint_dir, args.models)
     
     if not models:
         print(f"No models found for dataset {args.dataset}")

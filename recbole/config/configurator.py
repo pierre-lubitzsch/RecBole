@@ -97,6 +97,9 @@ class Config(object):
         self._set_eval_neg_sample_args("valid")
         self._set_eval_neg_sample_args("test")
 
+    def get(self, key, default=None):
+        return self.final_config_dict[key] if key in self.final_config_dict else default
+
     def _init_parameters_category(self):
         self.parameters = dict()
         self.parameters["General"] = general_arguments

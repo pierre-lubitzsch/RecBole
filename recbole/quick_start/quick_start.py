@@ -206,7 +206,14 @@ def run_recbole(
     print("original dataset")
     logger.info(dataset)
 
-    if retrain_flag:
+    # Remove forget set if retraining OR if evaluating an unlearned model (need to use retain dataset)
+    remove_forget_set = retrain_flag or (
+        unlearning_fraction is not None and 
+        unlearning_sample_selection_method is not None and
+        retrain_checkpoint_idx_to_match is not None
+    )
+    
+    if remove_forget_set:
         # remove unlearned interactions
         if "spam" in config and config["spam"]:
             unlearning_samples_path = os.path.join(
@@ -295,6 +302,13 @@ def run_recbole(
     # model loading and initialization
     init_seed(config["seed"] + config["local_rank"], config["reproducibility"])
     model = get_model(config["model"])(config, train_data._dataset).to(config["device"])
+    
+    # Automatically compute inverse frequency weights for Sets2Sets model
+    if hasattr(model, 'compute_inverse_freq_weights_from_dataset'):
+        logger.info("Computing inverse frequency weights from training data...")
+        model.compute_inverse_freq_weights_from_dataset(train_data)
+        logger.info("Inverse frequency weights computed.")
+    
     logger.info(model)
 
     transform = construct_transform(config)
@@ -366,8 +380,15 @@ def run_recbole(
 
     # Sensitive item evaluation
     if "sensitive_category" in config and config['sensitive_category'] is not None:
+        # Determine if this is a retrained or unlearned model
+        is_unlearned_model = (unlearning_fraction is not None and 
+                              unlearning_sample_selection_method is not None and 
+                              retrain_checkpoint_idx_to_match is not None)
+        
         if retrain_flag:
             print("\nSensitive Item Evaluation for Retrained Model")
+        elif is_unlearned_model:
+            print("\nSensitive Item Evaluation for Unlearned Model")
         else:
             print("\nSensitive Item Evaluation for Original Model")
 
@@ -393,7 +414,8 @@ def run_recbole(
             print(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs (out of {len(sensitive_asins)} ASINs)")
 
             # Determine which users to evaluate
-            if retrain_flag:
+            # For retrained or unlearned models, evaluate the users that were supposed to be unlearned
+            if retrain_flag or (unlearning_fraction is not None and unlearning_sample_selection_method is not None and retrain_checkpoint_idx_to_match is not None):
                 # For retrained models, evaluate the users that were supposed to be unlearned
                 # Load unlearning samples to determine which users were unlearned
                 unlearning_samples_path = os.path.join(
@@ -425,8 +447,9 @@ def run_recbole(
                 )
 
                 # Calculate how many users were unlearned at this checkpoint
+                checkpoint_idx = retrain_checkpoint_idx_to_match if retrain_checkpoint_idx_to_match is not None else 3
                 unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
-                users_unlearned = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
+                users_unlearned = unlearning_checkpoints[checkpoint_idx]
 
                 # Get the actual user IDs that were unlearned
                 # pairs_by_user.keys() contains tokens from CSV (ints or strings depending on dataset)
@@ -435,7 +458,7 @@ def run_recbole(
                 sorted_users = sorted(pairs_by_user.keys())[:users_unlearned + 1]
                 unlearned_user_ids = [dataset.token2id(uid_field, str(u)) for u in sorted_users]
 
-                print(f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {retrain_checkpoint_idx_to_match}")
+                print(f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {checkpoint_idx}")
             else:
                 # For original models, evaluate all users
                 uid_field = dataset.uid_field
@@ -526,10 +549,15 @@ def run_recbole(
                 print(f"[Top-{k}] Sensitive items per user - Avg: {avg_sensitive_per_user:.4f}, Min: {min_sensitive_per_user}, Max: {max_sensitive_per_user}")
                 print(f"[Top-{k}] Total sensitive items in predictions: {total_sensitive_in_topk}")
 
+                checkpoint_idx = retrain_checkpoint_idx_to_match if retrain_checkpoint_idx_to_match is not None else None
+                is_unlearned_model = (unlearning_fraction is not None and 
+                                      unlearning_sample_selection_method is not None and 
+                                      retrain_checkpoint_idx_to_match is not None)
                 sensitive_results.append({
                     "sensitive_category": sensitive_category,
-                    "checkpoint_idx": retrain_checkpoint_idx_to_match if retrain_flag else None,
+                    "checkpoint_idx": checkpoint_idx if (retrain_flag or is_unlearned_model) else None,
                     "is_retrained": retrain_flag,
+                    "is_unlearned": is_unlearned_model,
                     "users_with_sensitive_in_topk": users_with_sensitive_in_topk,
                     "total_unlearned_users": len(unlearned_user_ids),
                     "pct_users_with_sensitive": pct_users_with_sensitive,
@@ -1360,6 +1388,12 @@ def objective_function(config_dict=None, config_file_list=None, saved=True):
     init_seed(config["seed"], config["reproducibility"])
     model_name = config["model"]
     model = get_model(model_name)(config, train_data._dataset).to(config["device"])
+    
+    # Automatically compute inverse frequency weights for Sets2Sets model
+    if hasattr(model, 'compute_inverse_freq_weights_from_dataset'):
+        logger.info("Computing inverse frequency weights from training data...")
+        model.compute_inverse_freq_weights_from_dataset(train_data)
+        logger.info("Inverse frequency weights computed.")
     trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, model)
     best_valid_score, best_valid_result = trainer.fit(
         train_data, valid_data, verbose=False, saved=saved
@@ -1406,6 +1440,12 @@ def load_data_and_model(model_file):
 
     init_seed(config["seed"], config["reproducibility"])
     model = get_model(config["model"])(config, train_data._dataset).to(config["device"])
+    
+    # Automatically compute inverse frequency weights for Sets2Sets model
+    if hasattr(model, 'compute_inverse_freq_weights_from_dataset'):
+        logger.info("Computing inverse frequency weights from training data...")
+        model.compute_inverse_freq_weights_from_dataset(train_data)
+        logger.info("Inverse frequency weights computed.")
     model.load_state_dict(checkpoint["state_dict"])
     model.load_other_parameter(checkpoint.get("other_parameter"))
 
