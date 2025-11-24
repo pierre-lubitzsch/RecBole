@@ -206,6 +206,10 @@ def run_recbole(
     print("original dataset")
     logger.info(dataset)
 
+    # Keep reference to original dataset for consistent ID mappings
+    # (dataset.copy preserves mappings, but keeping original ensures we have full mappings)
+    original_dataset = dataset
+
     # Remove forget set if retraining OR if evaluating an unlearned model (need to use retain dataset)
     remove_forget_set = retrain_flag or (
         unlearning_fraction is not None and 
@@ -263,15 +267,25 @@ def run_recbole(
         users_unlearned = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
         removed_mask = np.zeros(len(dataset.inter_feat), dtype=bool)
 
-        uid_field, iid_field = dataset.uid_field, dataset.iid_field
+        uid_field, iid_field = original_dataset.uid_field, original_dataset.iid_field
         user_ids = dataset.inter_feat[uid_field].to_numpy()
         item_ids = dataset.inter_feat[iid_field].to_numpy()
 
         pairs_by_user_unlearned = sorted(pairs_by_user.items())[:users_unlearned + 1]
 
-        for unlearn_request_idx, (u, forget_items) in enumerate(pairs_by_user_unlearned):
-            all_idx = np.where(user_ids == u)[0]
-            mask = np.isin(item_ids[all_idx], forget_items)
+        for unlearn_request_idx, (u_token, forget_items_tokens) in enumerate(pairs_by_user_unlearned):
+            # Convert tokens to internal IDs using original_dataset to ensure consistent mappings
+            try:
+                u_id = original_dataset.token2id(uid_field, str(u_token))
+            except ValueError:
+                # User token doesn't exist in dataset, skip
+                logger.warning(f"User token {u_token} not found in dataset, skipping")
+                continue
+            
+            forget_items_ids = [original_dataset.token2id(iid_field, str(item_token)) for item_token in forget_items_tokens]
+            
+            all_idx = np.where(user_ids == u_id)[0]
+            mask = np.isin(item_ids[all_idx], forget_items_ids)
             # Mark the forget items (interactions to remove) as True
             removed_mask[all_idx[mask]] = True
 
@@ -453,11 +467,25 @@ def run_recbole(
 
                 # Get the actual user IDs that were unlearned
                 # pairs_by_user.keys() contains tokens from CSV (ints or strings depending on dataset)
-                # Convert tokens to strings then to internal IDs
-                uid_field = dataset.uid_field
+                # Convert tokens to strings then to internal IDs using original_dataset to ensure consistent mappings
+                uid_field = original_dataset.uid_field
                 sorted_users = sorted(pairs_by_user.keys())[:users_unlearned + 1]
-                unlearned_user_ids = [dataset.token2id(uid_field, str(u)) for u in sorted_users]
+                unlearned_user_ids = []
+                skipped_users = []
+                for u in sorted_users:
+                    try:
+                        # Use original_dataset to ensure we have full token-to-ID mappings
+                        user_id = original_dataset.token2id(uid_field, str(u))
+                        unlearned_user_ids.append(user_id)
+                    except ValueError:
+                        # User token doesn't exist in original dataset, skip
+                        skipped_users.append(str(u))
+                        continue
 
+                if skipped_users:
+                    logger.warning(f"Skipped {len(skipped_users)} users that don't exist in original dataset: "
+                                 f"{skipped_users[:5]}{'...' if len(skipped_users) > 5 else ''}")
+                
                 print(f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {checkpoint_idx}")
             else:
                 # For original models, evaluate all users
