@@ -242,18 +242,25 @@ def run_recbole(
             )
 
         # Load unlearning samples based on task type
-        if config.task_type != "CF":
+        if config.task_type == "SBR":
             unlearning_samples = pd.read_csv(
                 unlearning_samples_path,
                 sep="\t",
-                names=["user_id", "item_id", "timestamp"],
+                names=["user_id", "session_id", "item_id", "timestamp"],
                 header=0,
             )
-        else:
+        elif config.task_type == "CF":
             unlearning_samples = pd.read_csv(
                 unlearning_samples_path,
                 sep="\t",
                 names=["user_id", "item_id", "rating", "timestamp"],
+                header=0,
+            )
+        elif config.task_type == "NBR": # TODO: maybe need to change format
+            unlearning_samples = pd.read_csv(
+                unlearning_samples_path,
+                sep="\t",
+                names=["user_id", "item_id", "timestamp"],
                 header=0,
             )
 
@@ -276,14 +283,10 @@ def run_recbole(
         for unlearn_request_idx, (u_token, forget_items_tokens) in enumerate(pairs_by_user_unlearned):
             # Convert tokens to internal IDs using original_dataset to ensure consistent mappings
             try:
-                u_id = original_dataset.token2id(uid_field, str(u_token))
+                u_id = original_dataset.token2id(uid_field, u_token)
             except ValueError:
-                try:
-                    u_id = original_dataset.token2id(uid_field, u_token)
-                except ValueError:
-                    # User token doesn't exist in dataset, skip
-                    logger.warning(f"User token {u_token} not found in dataset, skipping")
-                    continue
+                logger.warning(f"User token {u_token} not found in dataset, skipping")
+                continue
 
             forget_items_ids = [original_dataset.token2id(iid_field, str(item_token)) for item_token in forget_items_tokens]
             
@@ -293,7 +296,7 @@ def run_recbole(
             removed_mask[all_idx[mask]] = True
 
         # Keep only interactions that are in the retain set
-        dataset = dataset.copy(dataset.inter_feat[~removed_mask])
+        retain_dataset = dataset.copy(dataset.inter_feat[~removed_mask])
 
         print("retain dataset")
         logger.info(dataset)
@@ -314,7 +317,7 @@ def run_recbole(
         logger.info(dataset)
 
     # dataset splitting
-    train_data, valid_data, test_data = data_preparation(config, dataset, spam=spam)
+    train_data, valid_data, test_data = data_preparation(config, retain_dataset, spam=spam)
 
     # model loading and initialization
     init_seed(config["seed"] + config["local_rank"], config["reproducibility"])
@@ -329,7 +332,7 @@ def run_recbole(
     logger.info(model)
 
     transform = construct_transform(config)
-    flops = get_flops(model, dataset, config["device"], logger, transform)
+    flops = get_flops(model, retain_dataset, config["device"], logger, transform)
     logger.info(set_color("FLOPs", "blue") + f": {flops}")
 
     # trainer loading and initialization
