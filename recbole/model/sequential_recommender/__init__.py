@@ -3,6 +3,7 @@ from recbole.model.sequential_recommender.caser import Caser
 from recbole.model.sequential_recommender.core import CORE
 from recbole.model.sequential_recommender.dien import DIEN
 from recbole.model.sequential_recommender.din import DIN
+from recbole.model.sequential_recommender.dnntsp import DNNTSP
 from recbole.model.sequential_recommender.fdsa import FDSA
 from recbole.model.sequential_recommender.fossil import FOSSIL
 from recbole.model.sequential_recommender.fpmc import FPMC
