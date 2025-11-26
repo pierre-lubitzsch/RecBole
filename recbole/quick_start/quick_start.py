@@ -278,10 +278,13 @@ def run_recbole(
             try:
                 u_id = original_dataset.token2id(uid_field, str(u_token))
             except ValueError:
-                # User token doesn't exist in dataset, skip
-                logger.warning(f"User token {u_token} not found in dataset, skipping")
-                continue
-            
+                try:
+                    u_id = original_dataset.token2id(uid_field, u_token)
+                except ValueError:
+                    # User token doesn't exist in dataset, skip
+                    logger.warning(f"User token {u_token} not found in dataset, skipping")
+                    continue
+
             forget_items_ids = [original_dataset.token2id(iid_field, str(item_token)) for item_token in forget_items_tokens]
             
             all_idx = np.where(user_ids == u_id)[0]

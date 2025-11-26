@@ -82,12 +82,13 @@ def identify_sensitive_tracks(tracks_file, categories):
     return sensitive_tracks
 
 def create_forget_sets(inter_file, sensitive_tracks, output_dir, seeds=[2, 3, 5, 7, 11],
-                       fractions=[1e-6, 1e-5, 1e-4], min_interactions=3):
+                       fractions=[1e-6, 1e-5, 1e-4], min_interactions=3, min_remaining_interactions=3):
     """
     Create forget set files using user-centric sampling:
     - For each user with sensitive interactions, add ALL their sensitive interactions
     - Continue until the target sample size is met
     - Only users with >= min_interactions sensitive interactions are eligible
+    - Only users who will have >= min_remaining_interactions after unlearning are eligible
 
     Args:
         inter_file: Path to .inter file
@@ -96,14 +97,17 @@ def create_forget_sets(inter_file, sensitive_tracks, output_dir, seeds=[2, 3, 5,
         seeds: List of random seeds for sampling users
         fractions: List of unlearning fractions to sample
         min_interactions: Minimum number of sensitive interactions for a user to be eligible
+        min_remaining_interactions: Minimum number of interactions that must remain after unlearning
     """
-    print(f"\nCreating forget sets (USER-CENTRIC SAMPLING, min_interactions={min_interactions})")
+    print(f"\nCreating forget sets (USER-CENTRIC SAMPLING, min_interactions={min_interactions}, min_remaining={min_remaining_interactions})")
 
     # First, load all interactions and organize by user and category
     print(f"\nLoading interactions from: {inter_file}")
 
     # Store interactions by category and user: {category: {user_id: [interactions]}}
     user_sensitive_interactions = defaultdict(lambda: defaultdict(list))
+    # Track total interactions per user
+    user_total_interactions = defaultdict(int)
     total_interactions = 0
 
     with open(inter_file, 'r') as f:
@@ -121,6 +125,9 @@ def create_forget_sets(inter_file, sensitive_tracks, output_dir, seeds=[2, 3, 5,
 
             user_id, session_id, item_id, timestamp = parts
 
+            # Track total interactions for this user
+            user_total_interactions[user_id] += 1
+
             # Check if this interaction involves a sensitive track
             for cat_name, track_set in sensitive_tracks.items():
                 if item_id in track_set:
@@ -136,23 +143,41 @@ def create_forget_sets(inter_file, sensitive_tracks, output_dir, seeds=[2, 3, 5,
         print(f"    ({total_sensitive/total_interactions*100:.4f}% of total)")
         print(f"    Avg interactions per user: {total_sensitive/len(user_dict):.2f}")
 
-    # Filter users based on minimum interactions threshold
-    print(f"\nFiltering users with >= {min_interactions} sensitive interactions:")
+    # Filter users based on:
+    # 1. Minimum sensitive interactions threshold
+    # 2. Minimum remaining interactions after unlearning
+    print(f"\nFiltering users with >= {min_interactions} sensitive interactions AND >= {min_remaining_interactions} remaining:")
     eligible_user_interactions = {}
-    
+
     for cat_name, user_dict in user_sensitive_interactions.items():
-        eligible_users = {
-            user_id: interactions 
-            for user_id, interactions in user_dict.items() 
-            if len(interactions) >= min_interactions
-        }
+        eligible_users = {}
+        filtered_too_few_sensitive = 0
+        filtered_too_few_remaining = 0
+
+        for user_id, interactions in user_dict.items():
+            num_sensitive = len(interactions)
+            num_total = user_total_interactions[user_id]
+            num_remaining = num_total - num_sensitive
+
+            # Check both conditions
+            if num_sensitive < min_interactions:
+                filtered_too_few_sensitive += 1
+                continue
+            if num_remaining < min_remaining_interactions:
+                filtered_too_few_remaining += 1
+                continue
+
+            eligible_users[user_id] = interactions
+
         eligible_user_interactions[cat_name] = eligible_users
-        
+
         total_eligible = sum(len(interactions) for interactions in eligible_users.values())
         original_total = sum(len(interactions) for interactions in user_dict.values())
-        
+
         print(f"  {cat_name}:")
         print(f"    Eligible users: {len(eligible_users):,} (from {len(user_dict):,})")
+        print(f"    Filtered out (< {min_interactions} sensitive): {filtered_too_few_sensitive:,}")
+        print(f"    Filtered out (< {min_remaining_interactions} remaining): {filtered_too_few_remaining:,}")
         print(f"    Eligible interactions: {total_eligible:,} (from {original_total:,})")
         print(f"    ({total_eligible/total_interactions*100:.4f}% of total dataset)")
         if len(eligible_users) > 0:
@@ -262,8 +287,8 @@ def main():
                 f.write(f"{track_id}\n")
         print(f"  {cat_name}: {output_file}")
 
-    # Step 2: Create forget sets (only users with >= 3 sensitive interactions)
-    create_forget_sets(inter_file, sensitive_tracks, output_dir, min_interactions=3)
+    # Step 2: Create forget sets (only users with >= 3 sensitive interactions AND >= 3 remaining)
+    create_forget_sets(inter_file, sensitive_tracks, output_dir, min_interactions=3, min_remaining_interactions=3)
 
 if __name__ == "__main__":
     main()
