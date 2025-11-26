@@ -283,7 +283,7 @@ def run_recbole(
         for unlearn_request_idx, (u_token, forget_items_tokens) in enumerate(pairs_by_user_unlearned):
             # Convert tokens to internal IDs using original_dataset to ensure consistent mappings
             try:
-                u_id = original_dataset.token2id(uid_field, u_token)
+                u_id = original_dataset.token2id(uid_field, str(u_token))
             except ValueError:
                 logger.warning(f"User token {u_token} not found in dataset, skipping")
                 continue
