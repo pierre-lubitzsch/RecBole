@@ -243,10 +243,17 @@ def run_recbole(
 
         # Load unlearning samples based on task type
         if config.task_type == "SBR":
+            # Read header to infer column names dynamically
+            with open(unlearning_samples_path, 'r') as f:
+                header_line = f.readline().strip()
+
+            # Extract column names from header (e.g., "user_id:token" -> "user_id")
+            column_names = [col.split(':')[0] for col in header_line.split('\t')]
+
             unlearning_samples = pd.read_csv(
                 unlearning_samples_path,
                 sep="\t",
-                names=["user_id", "session_id", "item_id", "timestamp"],
+                names=column_names,
                 header=0,
             )
         elif config.task_type == "CF":
