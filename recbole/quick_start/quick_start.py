@@ -296,7 +296,7 @@ def run_recbole(
             removed_mask[all_idx[mask]] = True
 
         # Keep only interactions that are in the retain set
-        retain_dataset = dataset.copy(dataset.inter_feat[~removed_mask])
+        dataset = dataset.copy(dataset.inter_feat[~removed_mask])
 
         print("retain dataset")
         logger.info(dataset)
@@ -317,7 +317,7 @@ def run_recbole(
         logger.info(dataset)
 
     # dataset splitting
-    train_data, valid_data, test_data = data_preparation(config, retain_dataset, spam=spam)
+    train_data, valid_data, test_data = data_preparation(config, dataset, spam=spam)
 
     # model loading and initialization
     init_seed(config["seed"] + config["local_rank"], config["reproducibility"])
@@ -332,7 +332,7 @@ def run_recbole(
     logger.info(model)
 
     transform = construct_transform(config)
-    flops = get_flops(model, retain_dataset, config["device"], logger, transform)
+    flops = get_flops(model, dataset, config["device"], logger, transform)
     logger.info(set_color("FLOPs", "blue") + f": {flops}")
 
     # trainer loading and initialization
