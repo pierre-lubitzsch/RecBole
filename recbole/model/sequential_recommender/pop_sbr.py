@@ -85,6 +85,11 @@ class Pop_SBR(SequentialRecommender):
         Pointwise prediction: return popularity score for specific items.
         """
         item = interaction[self.POS_ITEM_ID]
+
+        # Handle case when model hasn't been trained yet
+        if self.max_cnt is None or self.max_cnt == 0:
+            return torch.zeros(len(item), device=self.device, dtype=torch.float)
+
         result = torch.true_divide(self.item_cnt[item], self.max_cnt)
         return result.squeeze(-1)
 
