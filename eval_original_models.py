@@ -227,7 +227,12 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
 
             # Evaluate all users in the dataset
             uid_field = dataset.uid_field
-            user_ids = dataset.inter_feat[uid_field].to_numpy()
+            user_ids_data = dataset.inter_feat[uid_field]
+            # Handle both tensor and numpy array cases
+            if isinstance(user_ids_data, torch.Tensor):
+                user_ids = user_ids_data.cpu().numpy()
+            else:
+                user_ids = user_ids_data
             unique_user_ids = np.unique(user_ids).tolist()
             logger.info(f"\nEvaluating all {len(unique_user_ids)} users in the dataset")
 
