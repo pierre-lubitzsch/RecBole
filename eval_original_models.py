@@ -88,7 +88,7 @@ def find_original_models_for_dataset(dataset, checkpoint_dir="saved", model_filt
     return models
 
 
-def load_dataset_once(dataset_name, model_name, config_file_list=None, config_dict=None, sensitive_category=None):
+def load_dataset_once(dataset_name, model_name, config_file_list=None, config_dict=None, sensitive_category=None, task_type=None):
     """Load the dataset once for reuse across multiple model evaluations.
 
     Args:
@@ -97,6 +97,7 @@ def load_dataset_once(dataset_name, model_name, config_file_list=None, config_di
         config_file_list: List of config files
         config_dict: Dictionary of config overrides
         sensitive_category: Sensitive category for evaluation
+        task_type: Task type ('CF' for collaborative filtering, 'SBR' for session-based rec)
 
     Returns:
         Tuple of (config, dataset, test_data)
@@ -107,6 +108,8 @@ def load_dataset_once(dataset_name, model_name, config_file_list=None, config_di
     config_dict["model"] = model_name
     if sensitive_category:
         config_dict["sensitive_category"] = sensitive_category
+    if task_type:
+        config_dict["task_type"] = task_type
 
     config = Config(
         model=model_name,
@@ -233,25 +236,56 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
             user_predictions = {}
 
             logger.info(f"Getting top-{max_k} predictions for {len(unique_user_ids)} users...")
-            for user_idx, user_id in enumerate(unique_user_ids):
-                if (user_idx + 1) % 1000 == 0:
-                    logger.info(f"  Processed {user_idx + 1}/{len(unique_user_ids)} users")
+            trainer.model.eval()
+            with torch.no_grad():
+                for user_idx, user_id in enumerate(unique_user_ids):
+                    if (user_idx + 1) % 1000 == 0:
+                        logger.info(f"  Processed {user_idx + 1}/{len(unique_user_ids)} users")
 
-                # Create interaction data for this user
-                interaction = {uid_field: torch.tensor([user_id]).to(config["device"])}
+                    try:
+                        # Create interaction for this user based on task type
+                        if config['task_type'] == 'SBR':
+                            # For sequential models, we need to provide item sequence
+                            # Get the user's interaction data from the dataset
+                            user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                            user_indices = torch.where(user_mask)[0]
 
-                # Get full sort predictions
-                try:
-                    scores = trainer.model.full_sort_predict(interaction)
+                            if len(user_indices) == 0:
+                                # User has no interactions, skip
+                                continue
 
-                    # Get top-k items
-                    topk_items = torch.topk(scores, k=max_k, largest=True, sorted=True)
-                    topk_item_ids = topk_items.indices.cpu().numpy()
+                            # Get the last interaction which contains the longest/complete sequence
+                            last_idx = user_indices[-1].item()
 
-                    user_predictions[user_id] = topk_item_ids
-                except Exception as e:
-                    logger.warning(f"Failed to get predictions for user {user_id}: {e}")
-                    continue
+                            # Get the item sequence fields
+                            item_seq_field = trainer.model.ITEM_SEQ
+                            item_seq_len_field = trainer.model.ITEM_SEQ_LEN
+
+                            interaction = {
+                                dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                                item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
+                                item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                            }
+                        else:
+                            # For CF models, only user_id is needed
+                            interaction = {
+                                'user_id': torch.tensor([user_id], device=trainer.device)
+                            }
+
+                        # Get predictions
+                        scores = trainer.model.full_sort_predict(interaction)
+
+                        # Get top-max_k items
+                        _, topk_items = torch.topk(scores, k=max_k, dim=-1)
+                        # Handle both 1D and 2D tensor outputs
+                        topk_items_np = topk_items.cpu().numpy()
+                        if topk_items_np.ndim > 1:
+                            topk_items_np = topk_items_np[0]
+                        user_predictions[user_id] = topk_items_np
+
+                    except Exception as e:
+                        logger.warning(f"Failed to get predictions for user {user_id}: {e}")
+                        continue
 
             logger.info(f"Completed predictions for {len(user_predictions)} users")
 
@@ -320,6 +354,8 @@ def main():
                        help="Sensitive category for evaluation (e.g., 'health', 'alcohol')")
     parser.add_argument("--output_file", "-o", type=str, default=None,
                        help="Output file to save results (JSON format)")
+    parser.add_argument("--task_type", type=str, default="CF",
+                       help="Task type: 'CF' for collaborative filtering, 'SBR' for session-based rec (default: CF)")
 
     args = parser.parse_args()
 
@@ -347,18 +383,20 @@ def main():
     config_file_list = [config_file] if os.path.exists(config_file) else None
 
     config_dict = {
-        "task_type": "CF",
+        "task_type": args.task_type,
         "gpu_id": int(args.cuda_visible_devices.split(",")[0]),
     }
 
     # Load dataset once
     print(f"Loading dataset: {args.dataset} (this will be reused for all models)")
+    print(f"Task type: {args.task_type}")
     config, dataset, train_data, valid_data, test_data, logger = load_dataset_once(
         args.dataset,
         first_model["model"],
         config_file_list=config_file_list,
         config_dict=config_dict,
         sensitive_category=args.sensitive_category,
+        task_type=args.task_type,
     )
     print(f"Dataset loaded successfully: {dataset}")
     print()
