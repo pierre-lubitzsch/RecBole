@@ -136,7 +136,7 @@ def load_dataset_once(dataset_name, model_name, config_file_list=None, config_di
     return config, dataset, train_data, valid_data, test_data, logger
 
 
-def evaluate_model(model_info, config, dataset, train_data, valid_data, test_data, logger, cuda_device="0"):
+def evaluate_model(model_info, config, dataset, train_data, valid_data, test_data, logger, cuda_device="0", checkpoint_idxs=None):
     """Evaluate a single model.
 
     Args:
@@ -148,6 +148,7 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
         test_data: Test dataloader
         logger: Logger object
         cuda_device: CUDA device to use
+        checkpoint_idxs: List of checkpoint indices for forget set evaluation
 
     Returns:
         Dictionary with evaluation results
@@ -225,121 +226,207 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
 
             logger.info(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs (out of {len(sensitive_asins)} ASINs)")
 
-            # Evaluate all users in the dataset
-            uid_field = dataset.uid_field
-            user_ids_data = dataset.inter_feat[uid_field]
-            # Handle both tensor and numpy array cases
-            if isinstance(user_ids_data, torch.Tensor):
-                user_ids = user_ids_data.cpu().numpy()
+            # Load forget set to get users to evaluate
+            if checkpoint_idxs is not None and len(checkpoint_idxs) > 0:
+                import pandas as pd
+
+                unlearning_samples_path = os.path.join(
+                    config["data_path"],
+                    f"{config['dataset']}_unlearn_pairs_sensitive_category_{sensitive_category}"
+                    f"_seed_{config['unlearn_sample_selection_seed']}"
+                    f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
+                )
+
+                logger.info(f"Loading forget set from: {unlearning_samples_path}")
+
+                if config.task_type == "SBR":
+                    # Read header to infer column names dynamically
+                    with open(unlearning_samples_path, 'r') as f:
+                        header_line = f.readline().strip()
+
+                    # Extract column names from header (e.g., "user_id:token" -> "user_id")
+                    column_names = [col.split(':')[0] for col in header_line.split('\t')]
+
+                    unlearning_samples_for_eval = pd.read_csv(
+                        unlearning_samples_path,
+                        sep="\t",
+                        names=column_names,
+                        header=0,
+                    )
+                elif config.task_type == "CF":
+                    unlearning_samples_for_eval = pd.read_csv(
+                        unlearning_samples_path,
+                        sep="\t",
+                        names=["user_id", "item_id", "rating", "timestamp"],
+                        header=0,
+                    )
+                else:
+                    unlearning_samples_for_eval = pd.read_csv(
+                        unlearning_samples_path,
+                        sep="\t",
+                        names=["user_id", "item_id", "timestamp"],
+                        header=0,
+                    )
+
+                pairs_by_user = (
+                    unlearning_samples_for_eval.groupby("user_id")["item_id"]
+                    .agg(list)
+                    .to_dict()
+                )
+
+                logger.info(f"Loaded forget set with {len(pairs_by_user)} users")
             else:
-                user_ids = user_ids_data
-            unique_user_ids = np.unique(user_ids).tolist()
-            logger.info(f"\nEvaluating all {len(unique_user_ids)} users in the dataset")
+                # No checkpoint indices specified, evaluate all users
+                checkpoint_idxs = [None]
+                pairs_by_user = None
 
-            # Get predictions for all users
-            max_k = 100  # Maximum k value for evaluation
-            user_predictions = {}
+            # Evaluate for each checkpoint index
+            all_checkpoint_results = {}
+            max_k = 20  # Maximum k value for evaluation
 
-            logger.info(f"Getting top-{max_k} predictions for {len(unique_user_ids)} users...")
-            trainer.model.eval()
-            with torch.no_grad():
-                for user_idx, user_id in enumerate(unique_user_ids):
-                    if (user_idx + 1) % 1000 == 0:
-                        logger.info(f"  Processed {user_idx + 1}/{len(unique_user_ids)} users")
+            for checkpoint_idx in checkpoint_idxs:
+                if checkpoint_idx is not None:
+                    # Calculate how many users were unlearned at this checkpoint
+                    unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
+                    users_unlearned = unlearning_checkpoints[checkpoint_idx]
 
-                    try:
-                        # Create interaction for this user based on task type
-                        if config['task_type'] == 'SBR':
-                            # For sequential models, we need to provide item sequence
-                            # Get the user's interaction data from the dataset
-                            user_mask = dataset.inter_feat[dataset.uid_field] == user_id
-                            user_indices = torch.where(user_mask)[0]
+                    # Get the actual user IDs that were unlearned
+                    uid_field = dataset.uid_field
+                    sorted_users = sorted(pairs_by_user.keys())[:users_unlearned + 1]
+                    unique_user_ids = []
+                    skipped_users = []
+                    for u in sorted_users:
+                        try:
+                            user_id = dataset.token2id(uid_field, str(u))
+                            unique_user_ids.append(user_id)
+                        except ValueError:
+                            # User token doesn't exist in dataset, skip
+                            skipped_users.append(str(u))
+                            continue
 
-                            if len(user_indices) == 0:
-                                # User has no interactions, skip
-                                continue
+                    if skipped_users:
+                        logger.warning(f"Skipped {len(skipped_users)} users that don't exist in dataset: "
+                                     f"{skipped_users[:5]}{'...' if len(skipped_users) > 5 else ''}")
 
-                            # Get the last interaction which contains the longest/complete sequence
-                            last_idx = user_indices[-1].item()
+                    logger.info(f"\nCheckpoint {checkpoint_idx}: Evaluating {len(unique_user_ids)} users unlearned up to this checkpoint")
+                else:
+                    # No checkpoint, evaluate all users
+                    uid_field = dataset.uid_field
+                    user_ids_data = dataset.inter_feat[uid_field]
+                    # Handle both tensor and numpy array cases
+                    if isinstance(user_ids_data, torch.Tensor):
+                        user_ids = user_ids_data.cpu().numpy()
+                    else:
+                        user_ids = user_ids_data
+                    unique_user_ids = np.unique(user_ids).tolist()
+                    logger.info(f"\nEvaluating all {len(unique_user_ids)} users in the dataset")
 
-                            # Get the item sequence fields
-                            item_seq_field = trainer.model.ITEM_SEQ
-                            item_seq_len_field = trainer.model.ITEM_SEQ_LEN
+                # Get predictions for selected users
+                user_predictions = {}
+                logger.info(f"Getting top-{max_k} predictions for {len(unique_user_ids)} users...")
+                trainer.model.eval()
+                with torch.no_grad():
+                    for user_idx, user_id in enumerate(unique_user_ids):
+                        if (user_idx + 1) % 1000 == 0:
+                            logger.info(f"  Processed {user_idx + 1}/{len(unique_user_ids)} users")
 
-                            interaction = {
-                                dataset.uid_field: torch.tensor([user_id], device=trainer.device),
-                                item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
-                                item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
-                            }
-                        else:
-                            # For CF models, only user_id is needed
-                            interaction = {
-                                'user_id': torch.tensor([user_id], device=trainer.device)
-                            }
+                        try:
+                            # Create interaction for this user based on task type
+                            if config['task_type'] == 'SBR':
+                                # For sequential models, we need to provide item sequence
+                                # Get the user's interaction data from the dataset
+                                user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                                user_indices = torch.where(user_mask)[0]
 
-                        # Get predictions
-                        scores = trainer.model.full_sort_predict(interaction)
+                                if len(user_indices) == 0:
+                                    # User has no interactions, skip
+                                    continue
 
-                        # Get top-max_k items
-                        _, topk_items = torch.topk(scores, k=max_k, dim=-1)
-                        # Handle both 1D and 2D tensor outputs
-                        topk_items_np = topk_items.cpu().numpy()
-                        if topk_items_np.ndim > 1:
-                            topk_items_np = topk_items_np[0]
-                        user_predictions[user_id] = topk_items_np
+                                # Get the last interaction which contains the longest/complete sequence
+                                last_idx = user_indices[-1].item()
 
-                    except Exception as e:
-                        logger.warning(f"Failed to get predictions for user {user_id}: {e}")
-                        continue
+                                # Get the item sequence fields
+                                item_seq_field = trainer.model.ITEM_SEQ
+                                item_seq_len_field = trainer.model.ITEM_SEQ_LEN
 
-            logger.info(f"Completed predictions for {len(user_predictions)} users")
+                                interaction = {
+                                    dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                                    item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
+                                    item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                                }
+                            else:
+                                # For CF models, only user_id is needed
+                                interaction = {
+                                    'user_id': torch.tensor([user_id], device=trainer.device)
+                                }
 
-            # Calculate metrics for different k values
-            k_values = [5, 10, 20, 50, 100]
-            sensitive_eval_results = {}
+                            # Get predictions
+                            scores = trainer.model.full_sort_predict(interaction)
 
-            for k in k_values:
-                users_with_sensitive = 0
-                total_sensitive_items = 0
-                sensitive_counts = []
+                            # Get top-max_k items
+                            _, topk_items = torch.topk(scores, k=max_k, dim=-1)
+                            # Handle both 1D and 2D tensor outputs
+                            topk_items_np = topk_items.cpu().numpy()
+                            if topk_items_np.ndim > 1:
+                                topk_items_np = topk_items_np[0]
+                            user_predictions[user_id] = topk_items_np
 
-                for user_id, topk_items in user_predictions.items():
-                    # Get top-k items for this k value
-                    current_topk = topk_items[:k]
+                        except Exception as e:
+                            logger.warning(f"Failed to get predictions for user {user_id}: {e}")
+                            continue
 
-                    # Count sensitive items in top-k
-                    sensitive_in_topk = sum(1 for item in current_topk if item in sensitive_item_ids)
+                logger.info(f"Completed predictions for {len(user_predictions)} users")
 
-                    if sensitive_in_topk > 0:
-                        users_with_sensitive += 1
-                        total_sensitive_items += sensitive_in_topk
+                # Calculate metrics for different k values
+                k_values = [5, 10, 20]
+                sensitive_eval_results = {}
 
-                    sensitive_counts.append(sensitive_in_topk)
+                for k in k_values:
+                    users_with_sensitive = 0
+                    total_sensitive_items = 0
+                    sensitive_counts = []
 
-                # Calculate percentages and averages
-                pct_users_with_sensitive = (users_with_sensitive / len(user_predictions) * 100) if user_predictions else 0
-                avg_sensitive_per_user = (total_sensitive_items / len(user_predictions)) if user_predictions else 0
-                avg_sensitive_per_affected_user = (total_sensitive_items / users_with_sensitive) if users_with_sensitive > 0 else 0
+                    for user_id, topk_items in user_predictions.items():
+                        # Get top-k items for this k value
+                        current_topk = topk_items[:k]
 
-                sensitive_eval_results[f"k={k}"] = {
-                    "users_with_sensitive": users_with_sensitive,
-                    "total_users": len(user_predictions),
-                    "pct_users_with_sensitive": pct_users_with_sensitive,
-                    "total_sensitive_items": total_sensitive_items,
-                    "avg_sensitive_per_user": avg_sensitive_per_user,
-                    "avg_sensitive_per_affected_user": avg_sensitive_per_affected_user,
-                    "min_sensitive": min(sensitive_counts) if sensitive_counts else 0,
-                    "max_sensitive": max(sensitive_counts) if sensitive_counts else 0,
-                }
+                        # Count sensitive items in top-k
+                        sensitive_in_topk = sum(1 for item in current_topk if item in sensitive_item_ids)
 
-                logger.info(f"\nTop-{k} Sensitive Item Metrics:")
-                logger.info(f"  Users with sensitive items: {users_with_sensitive}/{len(user_predictions)} ({pct_users_with_sensitive:.2f}%)")
-                logger.info(f"  Total sensitive items: {total_sensitive_items}")
-                logger.info(f"  Avg sensitive items per user: {avg_sensitive_per_user:.4f}")
-                logger.info(f"  Avg sensitive items per affected user: {avg_sensitive_per_affected_user:.4f}")
-                logger.info(f"  Min/Max sensitive items: {min(sensitive_counts)}/{max(sensitive_counts)}")
+                        if sensitive_in_topk > 0:
+                            users_with_sensitive += 1
+                            total_sensitive_items += sensitive_in_topk
 
-            result["sensitive_item_evaluation"] = sensitive_eval_results
+                        sensitive_counts.append(sensitive_in_topk)
+
+                    # Calculate percentages and averages
+                    pct_users_with_sensitive = (users_with_sensitive / len(user_predictions) * 100) if user_predictions else 0
+                    avg_sensitive_per_user = (total_sensitive_items / len(user_predictions)) if user_predictions else 0
+                    avg_sensitive_per_affected_user = (total_sensitive_items / users_with_sensitive) if users_with_sensitive > 0 else 0
+
+                    sensitive_eval_results[f"k={k}"] = {
+                        "users_with_sensitive": users_with_sensitive,
+                        "total_users": len(user_predictions),
+                        "pct_users_with_sensitive": pct_users_with_sensitive,
+                        "total_sensitive_items": total_sensitive_items,
+                        "avg_sensitive_per_user": avg_sensitive_per_user,
+                        "avg_sensitive_per_affected_user": avg_sensitive_per_affected_user,
+                        "min_sensitive": min(sensitive_counts) if sensitive_counts else 0,
+                        "max_sensitive": max(sensitive_counts) if sensitive_counts else 0,
+                    }
+
+                    logger.info(f"\nTop-{k} Sensitive Item Metrics:")
+                    logger.info(f"  Users with sensitive items: {users_with_sensitive}/{len(user_predictions)} ({pct_users_with_sensitive:.2f}%)")
+                    logger.info(f"  Total sensitive items: {total_sensitive_items}")
+                    logger.info(f"  Avg sensitive items per user: {avg_sensitive_per_user:.4f}")
+                    logger.info(f"  Avg sensitive items per affected user: {avg_sensitive_per_affected_user:.4f}")
+                    logger.info(f"  Min/Max sensitive items: {min(sensitive_counts)}/{max(sensitive_counts)}")
+
+                # Store results for this checkpoint
+                checkpoint_key = f"checkpoint_{checkpoint_idx}" if checkpoint_idx is not None else "all_users"
+                all_checkpoint_results[checkpoint_key] = sensitive_eval_results
+
+            result["sensitive_item_evaluation"] = all_checkpoint_results
         else:
             logger.warning(f"Sensitive items file not found: {sensitive_items_path}")
 
@@ -361,8 +448,18 @@ def main():
                        help="Output file to save results (JSON format)")
     parser.add_argument("--task_type", type=str, default="CF",
                        help="Task type: 'CF' for collaborative filtering, 'SBR' for session-based rec (default: CF)")
+    parser.add_argument("--seed", type=int, default=None,
+                       help="Seed for forget set selection (required if sensitive_category is set)")
+    parser.add_argument("--unlearning_fraction", type=float, default=None,
+                       help="Unlearning fraction for forget set (required if sensitive_category is set)")
+    parser.add_argument("--retrain_checkpoint_idxs_to_match", type=int, nargs="+", default=[0, 1, 2, 3],
+                       help="Checkpoint indices for forget set size (0-3, default: [0, 1, 2, 3] for all checkpoints)")
 
     args = parser.parse_args()
+
+    # Validate arguments
+    if args.sensitive_category and (args.seed is None or args.unlearning_fraction is None):
+        parser.error("--seed and --unlearning_fraction are required when --sensitive_category is set")
 
     # Set CUDA device
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_visible_devices
@@ -391,10 +488,18 @@ def main():
         "task_type": args.task_type,
         "gpu_id": int(args.cuda_visible_devices.split(",")[0]),
     }
+    if args.seed is not None:
+        config_dict["unlearn_sample_selection_seed"] = args.seed
+    if args.unlearning_fraction is not None:
+        config_dict["unlearning_fraction"] = args.unlearning_fraction
 
     # Load dataset once
     print(f"Loading dataset: {args.dataset} (this will be reused for all models)")
     print(f"Task type: {args.task_type}")
+    if args.sensitive_category:
+        print(f"Sensitive category: {args.sensitive_category}")
+        print(f"Seed: {args.seed}, Unlearning fraction: {args.unlearning_fraction}")
+        print(f"Checkpoint indices: {args.retrain_checkpoint_idxs_to_match}")
     config, dataset, train_data, valid_data, test_data, logger = load_dataset_once(
         args.dataset,
         first_model["model"],
@@ -423,6 +528,7 @@ def main():
                 test_data,
                 logger,
                 cuda_device=args.cuda_visible_devices.split(",")[0],
+                checkpoint_idxs=args.retrain_checkpoint_idxs_to_match if args.sensitive_category else None,
             )
 
             if result:
