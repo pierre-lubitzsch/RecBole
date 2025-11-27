@@ -136,7 +136,7 @@ def load_dataset_once(dataset_name, model_name, config_file_list=None, config_di
     return config, dataset, train_data, valid_data, test_data, logger
 
 
-def evaluate_model(model_info, config, dataset, train_data, valid_data, test_data, logger, cuda_device="0", checkpoint_idxs=None):
+def evaluate_model(model_info, config, dataset, train_data, valid_data, test_data, logger, cuda_device="0", checkpoint_idxs=None, unlearning_fraction=None, sensitive_category=None):
     """Evaluate a single model.
 
     Args:
@@ -149,6 +149,8 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
         logger: Logger object
         cuda_device: CUDA device to use
         checkpoint_idxs: List of checkpoint indices for forget set evaluation
+        unlearning_fraction: Unlearning fraction for forget set loading
+        sensitive_category: Sensitive category for evaluation
 
     Returns:
         Dictionary with evaluation results
@@ -165,7 +167,12 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
     # Update config for this specific model/seed
     config["model"] = model_name
     config["seed"] = seed
+    config["unlearn_sample_selection_seed"] = seed  # Use model seed for forget set
     config["gpu_id"] = int(cuda_device)
+    if unlearning_fraction is not None:
+        config["unlearning_fraction"] = unlearning_fraction
+    if sensitive_category is not None:
+        config["sensitive_category"] = sensitive_category
 
     # Re-initialize seed for this model
     init_seed(seed, config["reproducibility"])
@@ -202,10 +209,10 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
     }
 
     # Sensitive item evaluation (if configured)
-    if "sensitive_category" in config and config['sensitive_category'] is not None:
+    if sensitive_category is not None:
         logger.info("\nSensitive Item Evaluation for Original Model")
+        logger.info(f"Using seed {seed} from model filename for forget set loading")
 
-        sensitive_category = config['sensitive_category']
         sensitive_items_path = os.path.join(config['data_path'], f"sensitive_asins_{sensitive_category}.txt")
 
         if os.path.exists(sensitive_items_path):
@@ -448,8 +455,6 @@ def main():
                        help="Output file to save results (JSON format)")
     parser.add_argument("--task_type", type=str, default="CF",
                        help="Task type: 'CF' for collaborative filtering, 'SBR' for session-based rec (default: CF)")
-    parser.add_argument("--seed", type=int, default=None,
-                       help="Seed for forget set selection (required if sensitive_category is set)")
     parser.add_argument("--unlearning_fraction", type=float, default=None,
                        help="Unlearning fraction for forget set (required if sensitive_category is set)")
     parser.add_argument("--retrain_checkpoint_idxs_to_match", type=int, nargs="+", default=[0, 1, 2, 3],
@@ -458,8 +463,8 @@ def main():
     args = parser.parse_args()
 
     # Validate arguments
-    if args.sensitive_category and (args.seed is None or args.unlearning_fraction is None):
-        parser.error("--seed and --unlearning_fraction are required when --sensitive_category is set")
+    if args.sensitive_category and args.unlearning_fraction is None:
+        parser.error("--unlearning_fraction is required when --sensitive_category is set")
 
     # Set CUDA device
     os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_visible_devices
@@ -488,8 +493,6 @@ def main():
         "task_type": args.task_type,
         "gpu_id": int(args.cuda_visible_devices.split(",")[0]),
     }
-    if args.seed is not None:
-        config_dict["unlearn_sample_selection_seed"] = args.seed
     if args.unlearning_fraction is not None:
         config_dict["unlearning_fraction"] = args.unlearning_fraction
 
@@ -498,8 +501,9 @@ def main():
     print(f"Task type: {args.task_type}")
     if args.sensitive_category:
         print(f"Sensitive category: {args.sensitive_category}")
-        print(f"Seed: {args.seed}, Unlearning fraction: {args.unlearning_fraction}")
+        print(f"Unlearning fraction: {args.unlearning_fraction}")
         print(f"Checkpoint indices: {args.retrain_checkpoint_idxs_to_match}")
+        print(f"Note: Seed will be read from each model filename")
     config, dataset, train_data, valid_data, test_data, logger = load_dataset_once(
         args.dataset,
         first_model["model"],
@@ -529,6 +533,8 @@ def main():
                 logger,
                 cuda_device=args.cuda_visible_devices.split(",")[0],
                 checkpoint_idxs=args.retrain_checkpoint_idxs_to_match if args.sensitive_category else None,
+                unlearning_fraction=args.unlearning_fraction,
+                sensitive_category=args.sensitive_category,
             )
 
             if result:
