@@ -541,7 +541,18 @@ def main():
 
     # Evaluate each model
     all_results = []
+    # Models to exclude from evaluation
+    excluded_models = ['ease', 'spectralcf']
+
     for i, model_info in enumerate(models, 1):
+        # Skip excluded models
+        if model_info['model'].lower() in excluded_models:
+            print(f"\n{'='*80}")
+            print(f"[{i}/{len(models)}] Skipping: {os.path.basename(model_info['model_file'])}")
+            print(f"Reason: {model_info['model']} is in the exclusion list")
+            print(f"{'='*80}\n")
+            continue
+
         print(f"\n{'='*80}")
         print(f"[{i}/{len(models)}] Evaluating: {os.path.basename(model_info['model_file'])}")
         print(f"{'='*80}\n")
