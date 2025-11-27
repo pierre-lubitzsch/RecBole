@@ -116,6 +116,12 @@ class SKNN_SBR(SequentialRecommender):
         """
         batch_sessions = interaction[self.USER_ID]
         batch_items = interaction[self.POS_ITEM_ID]
+
+        # Check if sequences are available (not available during training/FLOPS calculation)
+        if self.ITEM_SEQ not in interaction:
+            # Return zeros during FLOPS calculation
+            return torch.zeros(len(batch_sessions), device=batch_sessions.device, dtype=torch.float)
+
         batch_seq = interaction[self.ITEM_SEQ]
         batch_seq_len = interaction[self.ITEM_SEQ_LEN]
 

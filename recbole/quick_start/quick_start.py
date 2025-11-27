@@ -517,7 +517,16 @@ def run_recbole(
             else:
                 # For original models, evaluate all users
                 uid_field = dataset.uid_field
-                user_ids = dataset.inter_feat[uid_field].to_numpy()
+                user_ids_data = dataset.inter_feat[uid_field]
+
+                # Handle both pandas Series and PyTorch tensor
+                if hasattr(user_ids_data, 'to_numpy'):
+                    # pandas Series
+                    user_ids = user_ids_data.to_numpy()
+                else:
+                    # PyTorch tensor
+                    user_ids = user_ids_data.cpu().numpy()
+
                 unlearned_user_ids = np.unique(user_ids).tolist()
 
                 print(f"\nEvaluating all {len(unlearned_user_ids)} users in the dataset")
