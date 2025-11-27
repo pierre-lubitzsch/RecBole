@@ -49,7 +49,11 @@ def ensure_dir(dir_path):
 
     """
     if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
+        try:
+            os.makedirs(dir_path)
+        except FileExistsError:
+            # Directory was created by another process between check and makedirs
+            pass
 
 
 def get_model(model_name):
