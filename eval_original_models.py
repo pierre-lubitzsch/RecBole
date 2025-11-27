@@ -174,6 +174,30 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
     if sensitive_category is not None:
         config["sensitive_category"] = sensitive_category
 
+    # Reload model-specific config to get all model defaults
+    # This ensures each model gets its proper default parameters from RecBole
+    model_lower = model_name.lower()
+    model_config_file = f"config_{model_lower}.yaml"
+    config_file_list = [model_config_file] if os.path.exists(model_config_file) else None
+
+    # Create a fresh config for this specific model
+    model_config = Config(
+        model=model_name,
+        dataset=dataset.dataset_name,
+        config_file_list=config_file_list,
+        config_dict={
+            "task_type": config.get("task_type", "CF"),
+            "gpu_id": int(cuda_device),
+            "seed": seed,
+            "unlearn_sample_selection_seed": seed,
+            "unlearning_fraction": unlearning_fraction,
+            "sensitive_category": sensitive_category,
+        }
+    )
+
+    # Use the model-specific config from now on
+    config = model_config
+
     # Re-initialize seed for this model
     init_seed(seed, config["reproducibility"])
 

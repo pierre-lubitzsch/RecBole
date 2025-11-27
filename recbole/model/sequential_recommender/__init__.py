@@ -31,3 +31,5 @@ from recbole.model.sequential_recommender.srgnn import SRGNN
 from recbole.model.sequential_recommender.stamp import STAMP
 from recbole.model.sequential_recommender.transrec import TransRec
 from recbole.model.sequential_recommender.fearec import FEARec
+from recbole.model.sequential_recommender.pop_sbr import Pop_SBR
+from recbole.model.sequential_recommender.sknn_sbr import SKNN_SBR
