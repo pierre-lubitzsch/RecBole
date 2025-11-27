@@ -56,23 +56,12 @@ class Pop_SBR(SequentialRecommender):
         """
         During training, count item occurrences to build popularity statistics.
 
-        Note: For sequential data, we count all items in the sequence,
-        not just the target item.
+        Note: For sequential data, we count the target items.
+        Sequences are not available during training (only during evaluation).
         """
-        # Count target items
+        # Count target items (the items being predicted)
         pos_items = interaction[self.POS_ITEM_ID]
         self.item_cnt[pos_items] += 1
-
-        # Also count items in the sequences for better popularity estimation
-        item_seq = interaction[self.ITEM_SEQ]
-        item_seq_len = interaction[self.ITEM_SEQ_LEN]
-
-        for seq, seq_len in zip(item_seq, item_seq_len):
-            # Count all items in sequence (excluding padding)
-            items = seq[:seq_len]
-            for item in items:
-                if item > 0:  # Skip padding (item_id = 0)
-                    self.item_cnt[item] += 1
 
         # Update max count
         self.max_cnt = torch.max(self.item_cnt, dim=0)[0]
