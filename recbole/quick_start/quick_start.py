@@ -540,8 +540,12 @@ def run_recbole(
             trainer.model.eval()
             with torch.no_grad():
                 for user_id in unlearned_user_ids:
-                    # Create interaction for this user based on task type
-                    if config['task_type'] == 'SBR':
+                    # Create interaction for this user based on model type
+                    # Check if model is traditional (doesn't need sequences even for SBR)
+                    from recbole.utils import ModelType
+                    is_traditional = config['MODEL_TYPE'] == ModelType.TRADITIONAL
+
+                    if config['task_type'] == 'SBR' and not is_traditional:
                         # For sequential models, we need to provide item sequence
                         # Get the user's interaction data from the dataset
                         # The dataset.inter_feat is sorted by uid and time, and after augmentation
@@ -566,9 +570,9 @@ def run_recbole(
                             item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
                         }
                     else:
-                        # For CF models, only user_id is needed
+                        # For CF models and traditional models, only user_id is needed
                         interaction = {
-                            'user_id': torch.tensor([user_id], device=trainer.device)
+                            dataset.uid_field: torch.tensor([user_id], device=trainer.device)
                         }
 
                     # Get predictions
