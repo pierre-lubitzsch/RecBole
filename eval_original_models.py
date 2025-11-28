@@ -546,7 +546,7 @@ def main():
     # Evaluate each model
     all_results = []
     # Models to exclude from evaluation
-    excluded_models = ['ease', 'spectralcf', 'pop', 'itemknn', 'sknn', "pop_sbr", "sknn_sbr"]
+    excluded_models = ['ease', 'spectralcf', 'pop', 'itemknn', 'sknn', "pop_sbr", "sknn_sbr", "random"]
 
     for i, model_info in enumerate(models, 1):
         # Skip excluded models
