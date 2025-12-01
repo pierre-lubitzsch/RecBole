@@ -299,19 +299,30 @@ class GlobalGatedUpdate(nn.Module):
         items_embedding = self.item_embedding(torch.arange(self.items_total, device=nodes.device))
 
         for num_nodes in num_nodes_per_graph:
+            num_nodes = num_nodes.item()  # Convert to Python int
             # Slice node features for this graph
             output_node_features = nodes_output[start_idx:start_idx + num_nodes, :]  # Shape: (user_nodes, item_embed_dim)
             output_nodes = nodes[start_idx:start_idx + num_nodes]  # Nodes for this subgraph
 
+            # Get unique nodes (shouldn't have duplicates, but being safe)
+            unique_nodes, inverse_indices = torch.unique(output_nodes, return_inverse=True)
+
+            # Aggregate features for unique nodes (average if there are duplicates)
+            unique_features = torch.zeros(len(unique_nodes), output_node_features.size(1),
+                                         device=nodes.device, dtype=output_node_features.dtype)
+            unique_features.index_add_(0, inverse_indices, output_node_features)
+            counts = torch.bincount(inverse_indices, minlength=len(unique_nodes)).float().unsqueeze(1)
+            unique_features = unique_features / counts
+
             # Initialize beta (items_total, 1) and set indicators
             beta = torch.zeros(self.items_total, 1, device=nodes.device)
-            beta[output_nodes] = 1
+            beta[unique_nodes] = 1
 
             # Compute updated embedding using gated mechanism
             embed = (1 - beta * self.alpha) * items_embedding.clone()
 
-            # Apply gated update for appearing items
-            embed[output_nodes, :] = embed[output_nodes, :] + self.alpha[output_nodes] * output_node_features
+            # Apply gated update for appearing items (using unique nodes)
+            embed[unique_nodes, :] = embed[unique_nodes, :] + self.alpha[unique_nodes] * unique_features
 
             # Append processed embedding for this batch
             batch_embedding.append(embed)
