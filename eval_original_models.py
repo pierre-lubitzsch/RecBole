@@ -192,6 +192,8 @@ def evaluate_model(model_info, config, dataset, train_data, valid_data, test_dat
             "unlearn_sample_selection_seed": seed,
             "unlearning_fraction": unlearning_fraction,
             "sensitive_category": sensitive_category,
+            "topk": [10, 20],  # Compute both @10 and @20 metrics
+            "metrics": ["Recall", "NDCG", "Hit", "MRR"],  # Ensure all metrics are computed
         }
     )
 

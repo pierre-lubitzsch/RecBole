@@ -312,10 +312,11 @@ class NextBasketDataset(Dataset):
         # Store actual baskets starting at position 1
         for idx, basket in enumerate(history):
             basket_pos = idx + 1  # Position 1, 2, ..., num_hist
-            per_basket_len[basket_pos] = len(basket)
-            if basket:
-                # Use all items, padding will be handled by -1 values
-                matrix[basket_pos, : len(basket)] = basket
+            # Truncate basket if it exceeds max_basket_items
+            truncated_basket = basket[: self.max_basket_items] if len(basket) > self.max_basket_items else basket
+            per_basket_len[basket_pos] = len(truncated_basket)
+            if truncated_basket:
+                matrix[basket_pos, : len(truncated_basket)] = truncated_basket
         
         # Last position (num_hist + 1) is padding (already zeros), per_basket_len[num_hist+1] = 0
         
@@ -335,9 +336,11 @@ class NextBasketDataset(Dataset):
         # We achieve same by filtering >= 0 (which skips all -1 padding)
         vec = np.full(self.max_basket_items, -1, dtype=np.int64)  # Use -1 for padding
         if basket:
-            # Use all items, padding will be handled by -1 values
-            vec[: len(basket)] = basket
-        return vec.tolist(), len(basket)
+            # Truncate basket if it exceeds max_basket_items
+            truncated_basket = basket[: self.max_basket_items] if len(basket) > self.max_basket_items else basket
+            vec[: len(truncated_basket)] = truncated_basket
+            return vec.tolist(), len(truncated_basket)
+        return vec.tolist(), 0
 
     def _register_field_properties(self):
         """Register feature metadata for subsequent RecBole processing."""

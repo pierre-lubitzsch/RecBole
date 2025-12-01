@@ -9,11 +9,11 @@ show_progress: True
 model: DNNTSP
 task_type: NBR  # Required for next basket recommendation
 benchmark_filename: ~
-MAX_NBR_HISTORY_BASKETS: 50  # Maximum number of historical baskets to retain
-MAX_NBR_BASKET_SIZE: 100  # Maximum size of each basket (-1 for unlimited)
-MIN_NBR_BASKET_COUNT: 4  # Minimum basket count per user (matching original)
+MAX_NBR_HISTORY_BASKETS: 50  # Maximum number of historical baskets to retain (original doesn't specify, using reasonable default)
+MAX_NBR_BASKET_SIZE: -1  # Maximum size of each basket (-1 for unlimited, matching original which uses dynamic graphs)
+MIN_NBR_BASKET_COUNT: 4  # Minimum basket count per user (matching original preprocessing)
 # NEXT_BASKET_JSON is automatically constructed as {dataset}_merged.json
-loss_type: custom  # Using custom loss (MultiLabelSoftMarginLoss)
+loss_type: custom  # Using custom loss (MultiLabelSoftMarginLoss, matching original "multi_label_soft_loss")
 
 train_neg_sample_args: ~
 valid_neg_sample_args: ~
@@ -34,17 +34,19 @@ valid_metric: Recall@10
 valid_metric_bigger: True
 
 # Model hyper-parameters
-# Matching original DNNTSP implementation settings
+# Matching original DNNTSP implementation from config.json
 embedding_size: 32  # Matching original: item_embed_dim=32
 
 # Training
-# Matching original train_main.py default hyperparameters:
+# Matching original DNNTSP config.json hyperparameters:
 # - epochs: 40
+# - batch_size: 64
 # - learning_rate: 0.001
-# - optimizer: Adam
+# - optim: Adam
 # - weight_decay: 0
-epochs: 40
-learner: adam
+# - loss_function: multi_label_soft_loss
+epochs: 40  # Matching original
+learner: adam  # Matching original optim: Adam
 learning_rate: 0.001  # Matching original
 weight_decay: 0.0  # Matching original (no L2 penalty)
 stopping_step: 100  # Set high to avoid early stopping (can be adjusted)
