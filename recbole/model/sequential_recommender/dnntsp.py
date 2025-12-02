@@ -679,7 +679,6 @@ class DNNTSP(SequentialRecommender):
          ) = self._transform_interaction_to_graphs(interaction)
         
         # Perform weighted GCN on dynamic graphs (n_1+n_2+..., T_max, item_embed_dim)
-        print(f"[DEBUG] Before GCN: nodes_feature.shape={nodes_feature.shape}, edges_weight.shape={edges_weight.shape}, graph.num_edges={graph.num_edges}")
         nodes_output = self.stacked_gcn(graph.edge_index, nodes_feature, edges_weight)
 
         # Self-attention in time dimension, (n_1+n_2+..., T_max, item_embed_dim)
