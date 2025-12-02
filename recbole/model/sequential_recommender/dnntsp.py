@@ -41,32 +41,65 @@ class WeightedGraphConv(MessagePassing):
         Returns:
             Transformed node features of shape (N, T, out_features)
         """
-        return self.propagate(edge_index, x=node_features, edge_weight=edge_weights)
+        # If edge_weights is 2D (T, num_edges), transpose to (num_edges, T) for proper indexing
+        if edge_weights.dim() == 2:
+            edge_weights = edge_weights.t()  # Now (num_edges, T)
 
-    def message(self, x_j, edge_weight):
+        # Store original shape if 3D
+        is_3d = node_features.dim() == 3
+        if is_3d:
+            N, T, F = node_features.shape
+            # Reshape to 2D for PyG processing: merge T into features
+            # This allows PyG to properly index nodes
+            node_features_2d = node_features.reshape(N, T * F)
+            result = self.propagate(edge_index, x=node_features_2d, edge_weight=edge_weights, temporal_dim=T)
+            # Note: we pass temporal_dim as a kwarg so message/aggregate can access it
+        else:
+            result = self.propagate(edge_index, x=node_features, edge_weight=edge_weights, temporal_dim=None)
+
+        return result
+
+    def message(self, x_j, edge_weight, temporal_dim):
         """
         Equivalent to fn.u_mul_e('n', 'e', 'msg') in DGL.
         Args:
-            x_j: Feature of source node (neighbor)
-            edge_weight: Feature of edge
+            x_j: Feature of source node (neighbor) - shape (num_edges, features) or (num_edges, T*F) if temporal
+            edge_weight: Feature of edge - shape (num_edges,) or (num_edges, T) after transpose in forward
+            temporal_dim: T dimension if node features were 3D, None otherwise
+        Returns:
+            Message tensor of shape (num_edges, T, features) when temporal, else (num_edges, features)
         """
-        if edge_weight.dim() == 2:  # If edge weights have a time dimension
-            # (num_edges, T) -> (num_edges, T, 1) * (num_edges, T, in_features)
-            return edge_weight.unsqueeze(-1) * x_j
+        if edge_weight.dim() == 2:  # If edge weights have a time dimension (num_edges, T)
+            # Unsqueeze to (num_edges, T, 1)
+            edge_weight_t = edge_weight.unsqueeze(-1)  # (num_edges, T, 1)
+
+            if temporal_dim is not None:
+                # x_j has shape (num_edges, T*F), need to reshape to (num_edges, T, F)
+                num_edges = x_j.size(0)
+                F = x_j.size(1) // temporal_dim
+                x_j = x_j.reshape(num_edges, temporal_dim, F)  # (num_edges, T, F)
+            else:
+                # First layer: x_j is (num_edges, features), expand to (num_edges, 1, features)
+                x_j = x_j.unsqueeze(1)  # (num_edges, 1, features)
+
+            # Broadcast multiply: (num_edges, T, 1) * (num_edges, 1 or T, features) -> (num_edges, T, features)
+            result = edge_weight_t * x_j
+            return result
         else:
-            return edge_weight.view(-1, 1) * x_j  # (num_edges, in_features)
+            return edge_weight.view(-1, 1) * x_j  # (num_edges, features)
 
     def aggregate(self, inputs, index):
         """
         Equivalent to fn.sum('msg', 'h') in DGL.
         Args:
-            inputs: Aggregated messages from neighbors
-            index: Target node indices
+            inputs: Aggregated messages from neighbors - shape (num_edges, features) or (num_edges, T, features)
+            index: Target node indices - shape (num_edges,)
+        Returns:
+            Aggregated node features - shape (num_nodes, features) or (num_nodes, T, features)
         """
-        # if we have multiple heads the heads are at dim 0 and the neighbors at dim 1, 
-        # otherwise the neighbors are at dim 0
-        dim = int(inputs.ndim == 3)
-        return scatter(inputs, index, dim=dim, reduce='sum')  # Sum over neighbors
+        # Always scatter along dimension 0 (the edge/neighbor dimension)
+        # This aggregates messages from all neighbors for each node
+        return scatter(inputs, index, dim=0, reduce='sum')  # Sum over neighbors
 
     def update(self, aggr_out):
         """Apply linear transformation."""
@@ -249,9 +282,12 @@ class AggregateNodesTemporalFeature(nn.Module):
         start_idx = 0
 
         for num_nodes, length in zip(num_nodes_per_graph, lengths):
+            num_nodes = num_nodes.item()  # Convert to Python int
+            length = length.item() if torch.is_tensor(length) else length  # Ensure length is int
+
             # Get node feature slice
             output_node_features = nodes_output[start_idx:start_idx + num_nodes, :length, :]
-            
+
             # Compute weights (user_nodes, 1, user_length)
             weights = self.Wq(output_node_features).transpose(1, 2)
 
@@ -286,7 +322,7 @@ class GlobalGatedUpdate(nn.Module):
         """
         Args:
             graph: batched graphs (PyG Batch object)
-            nodes: tensor (n_1+n_2+..., )
+            nodes: tensor (n_1+n_2+..., ) - item IDs for each node
             nodes_output: the output of self-attention model in time dimension, (n_1+n_2+..., F)
         Returns:
             batch_embedding: (batch_size, items_total, item_embed_dim)
@@ -302,9 +338,9 @@ class GlobalGatedUpdate(nn.Module):
             num_nodes = num_nodes.item()  # Convert to Python int
             # Slice node features for this graph
             output_node_features = nodes_output[start_idx:start_idx + num_nodes, :]  # Shape: (user_nodes, item_embed_dim)
-            output_nodes = nodes[start_idx:start_idx + num_nodes]  # Nodes for this subgraph
+            output_nodes = nodes[start_idx:start_idx + num_nodes]  # Item IDs for this subgraph
 
-            # Get unique nodes (shouldn't have duplicates, but being safe)
+            # output_nodes should already be unique within each graph
             unique_nodes, inverse_indices = torch.unique(output_nodes, return_inverse=True)
 
             # Aggregate features for unique nodes (average if there are duplicates)
@@ -493,27 +529,27 @@ class DNNTSP(SequentialRecommender):
         # Construct fully connected graph
         num_nodes = nodes.size(0)
         project_nodes = torch.arange(num_nodes, device=device)
-        
+
         # Create edge index: fully connected
         src = project_nodes.repeat_interleave(num_nodes)
         dst = project_nodes.repeat(num_nodes)
         edge_index = torch.stack([src, dst], dim=0).long()
-        
+
         # Compute edge weights based on co-occurrence
         edges_weight_dict = self._get_edges_weight(user_data)
-        
+
         # Add self-loops
         for node in nodes.tolist():
             if edges_weight_dict[(node, node)] == 0.0:
                 edges_weight_dict[(node, node)] = 1.0
-        
+
         # Normalize weights
         max_weight = max(edges_weight_dict.values()) if edges_weight_dict else 1.0
         for key in edges_weight_dict:
             edges_weight_dict[key] = edges_weight_dict[key] / max_weight
-        
+
         # Create PyG Data object
-        pyg_data = Data(x=nodes_feature, edge_index=edge_index)
+        pyg_data = Data(x=nodes_feature, edge_index=edge_index, num_nodes=num_nodes)
         
         # Get edge weights for each timestamp
         edges_weight = []
@@ -580,7 +616,8 @@ class DNNTSP(SequentialRecommender):
             pyg_data, nodes_feature, edges_weight, nodes, user_data = self._build_graph_for_user(
                 user_history, user_basket_len
             )
-            
+
+
             graphs.append(pyg_data)
             nodes_features.append(nodes_feature)
             edges_weights.append(edges_weight)
@@ -590,7 +627,7 @@ class DNNTSP(SequentialRecommender):
         
         # Batch graphs
         batched_graph = Batch.from_data_list(graphs)
-        
+
         # Concatenate node features and nodes
         all_nodes_feature = torch.cat(nodes_features, dim=0)
         all_nodes_tensor = torch.cat(all_nodes, dim=0)
@@ -642,11 +679,12 @@ class DNNTSP(SequentialRecommender):
          ) = self._transform_interaction_to_graphs(interaction)
         
         # Perform weighted GCN on dynamic graphs (n_1+n_2+..., T_max, item_embed_dim)
+        print(f"[DEBUG] Before GCN: nodes_feature.shape={nodes_feature.shape}, edges_weight.shape={edges_weight.shape}, graph.num_edges={graph.num_edges}")
         nodes_output = self.stacked_gcn(graph.edge_index, nodes_feature, edges_weight)
 
         # Self-attention in time dimension, (n_1+n_2+..., T_max, item_embed_dim)
         nodes_output = self.masked_self_attention(nodes_output)
-        
+
         # Aggregate node features in temporal dimension, (n_1+n_2+..., item_embed_dim)
         nodes_output = self.aggregate_nodes_temporal_feature(graph, lengths, nodes_output)
 
