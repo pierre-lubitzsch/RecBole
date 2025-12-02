@@ -537,6 +537,7 @@ def run_recbole(
 
             # Get top-max_k predictions once for all users
             all_user_topk_items = {}
+            skipped_users_no_interactions = []
             trainer.model.eval()
             with torch.no_grad():
                 for user_id in unlearned_user_ids:
@@ -555,6 +556,7 @@ def run_recbole(
 
                         if len(user_indices) == 0:
                             # User has no interactions, skip
+                            skipped_users_no_interactions.append(user_id)
                             continue
 
                         # Get the last interaction which contains the longest/complete sequence
@@ -586,6 +588,9 @@ def run_recbole(
                         topk_items_np = topk_items_np[0]
                     all_user_topk_items[user_id] = topk_items_np
 
+            if skipped_users_no_interactions:
+                print(f"Skipped {len(skipped_users_no_interactions)} users with no interactions in retain dataset")
+
             # Evaluate for each k value
             sensitive_results = []
             for k in topk_list:
@@ -593,7 +598,7 @@ def run_recbole(
                 total_sensitive_in_topk = 0
                 sensitive_counts_per_user = []
 
-                for user_id in unlearned_user_ids:
+                for user_id in all_user_topk_items.keys():
                     # Get top-k items for this user
                     topk_items = all_user_topk_items[user_id][:k]
 
