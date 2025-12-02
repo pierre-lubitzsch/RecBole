@@ -42,22 +42,26 @@ SENSITIVE_CATEGORIES = {
         'description': 'Extreme or graphic violent content',
         'min_signals': 2  # Require stricter matching
     },
-    'mental_health': {
+    'health': {
         'title_keywords': {
-            'exact': ['suicide', 'depression', 'anxiety', 'trauma', 'ptsd'],
+            'exact': ['suicide', 'depression', 'ptsd', 'schizophrenia'],
             'relaxed': [
-                'mental health', 'mental illness', 'psychiatric', 'therapy',
-                'breakdown', 'bipolar', 'schizophrenia', 'self harm', 'cutting',
-                'overdose', 'addiction', 'rehab', 'recovery'
+                'mental health', 'mental illness', 'psychiatric', 'psychiatrist',
+                'bipolar', 'self harm', 'self-harm',
+                'overdose', 'addiction', 'rehab',
+                'insanity', 'insane', 'asylum', 'institutionalized', 'psychosis',
+                'psychotic', 'mental hospital', 'mental institution'
             ]
         },
-        'genre_keywords': ['Drama'],  # Mental health often in dramas
+        'genre_keywords': [],  # Drama is too broad - removed to prevent false positives
         'tag_keywords': [
-            'depressing', 'sad', 'mental health', 'suicide', 'trauma', 'therapy',
-            'addiction', 'depression', 'anxiety'
+            'mental health', 'mental illness', 'suicide', 'suicidal', 'depression',
+            'depressing', 'addiction', 'alcoholism', 'drug abuse',
+            'psychological', 'psychiatry', 'therapy', 'ptsd', 'trauma',
+            'schizophrenia', 'bipolar'
         ],
         'description': 'Mental health related content',
-        'min_signals': 1  # Can match on title or tag alone
+        'min_signals': 1  # Match on title or tag (without Drama genre catching everything)
     },
     'explicit': {
         'title_keywords': {
@@ -359,8 +363,8 @@ Examples:
   # Use extreme_violence category (stricter criteria)
   python identify_sensitive_movies.py --category extreme_violence --output sensitive_movies_extreme.txt
   
-  # Use mental_health category
-  python identify_sensitive_movies.py --category mental_health --output sensitive_movies_health.txt
+  # Use health category
+  python identify_sensitive_movies.py --category health --output sensitive_movies_health.txt
   
   # Customize minimum signals required
   python identify_sensitive_movies.py --category violence --min-signals 3 --output sensitive_movies_strict.txt
@@ -377,7 +381,7 @@ Examples:
 Available categories:
   - violence: General violent content (requires 2+ signals)
   - extreme_violence: Extreme/graphic violence (requires 2+ signals, stricter)
-  - mental_health: Mental health related content (requires 1+ signal)
+  - health: Mental health related content (requires 1+ signal)
   - explicit: Explicit sexual content (requires 1+ signal)
 
 Common MovieLens genres:
@@ -392,7 +396,7 @@ Common MovieLens genres:
         '--category',
         choices=list(SENSITIVE_CATEGORIES.keys()),
         default=None,
-        help='Predefined sensitive category to use (violence, extreme_violence, mental_health, explicit)'
+        help='Predefined sensitive category to use (violence, extreme_violence, health, explicit)'
     )
     parser.add_argument(
         '--min-signals',

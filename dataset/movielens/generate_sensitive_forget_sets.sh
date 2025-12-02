@@ -7,7 +7,7 @@ rating_threshold=3.5
 # Define sensitive movie categories
 # Available categories: violence, extreme_violence, mental_health, explicit
 # The new multi-signal detection uses titles, genres, and tags for better accuracy
-declare -a categories=("violence" "mental_health")
+declare -a categories=("health")
 
 # For stricter matching, you can use:
 # declare -a categories=("extreme_violence")
