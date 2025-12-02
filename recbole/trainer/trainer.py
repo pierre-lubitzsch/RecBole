@@ -29,7 +29,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from tqdm import tqdm
-import torch.cuda.amp as amp
+import torch.amp as amp
 
 from recbole.data.interaction import Interaction
 from recbole.data.dataloader import FullSortEvalDataLoader
@@ -172,6 +172,7 @@ class Trainer(AbstractTrainer):
         self.best_valid_result = None
         self.train_loss_dict = dict()
         self.optimizer = self._build_optimizer()
+        self.scaler = amp.GradScaler('cuda', enabled=self.enable_scaler)
         self.eval_type = config["eval_type"]
         self.eval_collector = Collector(config)
         self.evaluator = Evaluator(config)
@@ -276,7 +277,7 @@ class Trainer(AbstractTrainer):
         if not self.config["single_spec"] and train_data.shuffle:
             train_data.sampler.set_epoch(epoch_idx)
 
-        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        scaler = self.scaler
         for batch_idx, interaction in enumerate(iter_data):
             if retain_samples_used_for_update is not None and retain_samples_used_for_update <= 0:
                 break
@@ -717,8 +718,8 @@ class Trainer(AbstractTrainer):
             if show_progress else custom_batches
         )
 
-        scaler = amp.GradScaler(enabled=self.enable_scaler)
-        
+        scaler = self.scaler
+
         for batch_idx, interaction in enumerate(iter_data):
             if retain_samples_used_for_update is not None and retain_samples_used_for_update <= 0:
                 break
@@ -896,7 +897,7 @@ class Trainer(AbstractTrainer):
             if show_progress else train_data
         )
 
-        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        scaler = self.scaler
         samples_processed = 0
         
         for batch_idx, interaction in enumerate(iter_data):
@@ -4714,7 +4715,7 @@ class NCLTrainer(Trainer):
             if show_progress
             else train_data
         )
-        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        scaler = self.scaler
 
         if not self.config["single_spec"] and train_data.shuffle:
             train_data.sampler.set_epoch(epoch_idx)
@@ -4727,7 +4728,7 @@ class NCLTrainer(Trainer):
                 self.set_reduce_hook()
                 sync_loss = self.sync_grad_loss()
 
-            with amp.autocast(enabled=self.enable_amp):
+            with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
                 losses = loss_func(interaction)
 
             if isinstance(losses, tuple):
