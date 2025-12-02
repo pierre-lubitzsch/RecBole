@@ -45,7 +45,7 @@ embedding_size: 32  # Matching original: item_embed_dim=32
 # - optim: Adam
 # - weight_decay: 0
 # - loss_function: multi_label_soft_loss
-epochs: 40  # Matching original
+epochs: 100  # Matching original
 learner: adam  # Matching original optim: Adam
 learning_rate: 0.001  # Matching original
 weight_decay: 0.0  # Matching original (no L2 penalty)
