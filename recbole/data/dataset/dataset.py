@@ -270,9 +270,13 @@ class Dataset(torch.utils.data.Dataset):
         # for spam unlearning we do not load the original dataset to train the models originally, but the dataset including spam sessions
         if self.spam:
             if self.unlearning:
-                token += f"_spam_sessions_dataset_{self.config['dataset']}_unlearning_fraction_{self.config['unlearning_fraction']}_n_target_items_{self.config['n_target_items']}_seed_{self.config['unlearn_sample_selection_seed']}"
+                # When unlearning, load only the fraud sessions to unlearn
+                token += f"_fraud_sessions_bandwagon_unpopular_ratio_{self.config['unlearning_fraction']}_seed_{self.config['unlearn_sample_selection_seed']}"
             else:
-                token += f"_with_spam_dataset_{self.config['dataset']}_unlearning_fraction_{self.config['unlearning_fraction']}_n_target_items_{self.config['n_target_items']}_seed_{self.config['unlearn_sample_selection_seed']}"
+                # When training with spam (but not unlearning), load the original clean dataset
+                # The fraud sessions will be injected separately in quick_start.py
+                # So we don't modify the token here - just load the base dataset
+                pass
         else:
             if self.unlearning:
                 token += f"_unlearn_pairs_{self.config['unlearning_sample_selection_method']}_seed_{self.config['unlearn_sample_selection_seed']}_unlearning_fraction_{float(self.config['unlearning_fraction'])}"
