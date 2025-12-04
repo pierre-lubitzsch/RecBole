@@ -200,19 +200,63 @@ def run_recbole(
     logger.info(sys.argv)
     logger.info(config)
 
-    # dataset filtering
+    # dataset filtering - always load base dataset
     dataset = create_dataset(config, unlearning=False, spam=spam)
 
-    print("original dataset")
+    print("original dataset (clean)")
     logger.info(dataset)
 
     # Keep reference to original dataset for consistent ID mappings
-    # (dataset.copy preserves mappings, but keeping original ensures we have full mappings)
     original_dataset = dataset
+
+    # INJECT FRAUD SESSIONS when spam=True and NOT retraining
+    # This adds fraudulent interactions to the clean dataset for training poisoned models
+    if spam and not retrain_flag and unlearning_fraction is not None:
+        logger.info("Spam mode: Injecting fraud sessions into training data...")
+
+        # Construct fraud sessions file path
+        fraud_sessions_path = os.path.join(
+            config["data_path"],
+            f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{unlearning_fraction}_seed_{config['unlearn_sample_selection_seed']}.inter"
+        )
+
+        if not os.path.exists(fraud_sessions_path):
+            # Try legacy naming
+            fraud_sessions_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{unlearning_fraction}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+            )
+
+        if os.path.exists(fraud_sessions_path):
+            logger.info(f"Loading fraud sessions from: {fraud_sessions_path}")
+
+            # Load fraud sessions
+            if config.task_type == "SBR":
+                with open(fraud_sessions_path, 'r') as f:
+                    header_line = f.readline().strip()
+                column_names = [col.split(':')[0] for col in header_line.split('\t')]
+                fraud_sessions = pd.read_csv(fraud_sessions_path, sep="\t", names=column_names, header=0)
+            elif config.task_type == "CF":
+                fraud_sessions = pd.read_csv(fraud_sessions_path, sep="\t", names=["user_id", "item_id", "rating", "timestamp"], header=0)
+            elif config.task_type == "NBR":
+                fraud_sessions = pd.read_csv(fraud_sessions_path, sep="\t", names=["user_id", "item_id", "timestamp"], header=0)
+
+            logger.info(f"Loaded {len(fraud_sessions)} fraud interactions")
+
+            # Combine original dataset with fraud sessions
+            orig_inter_df = dataset.inter_feat.to_pandas()
+            combined_inter_df = pd.concat([orig_inter_df, fraud_sessions], ignore_index=True)
+
+            # Create new dataset with combined interactions
+            dataset = dataset.copy(combined_inter_df)
+            logger.info(f"Poisoned dataset created: {len(combined_inter_df)} total interactions")
+        else:
+            logger.warning(f"Fraud sessions file not found: {fraud_sessions_path}")
+            logger.warning("Training on clean data only!")
 
     # Remove forget set if retraining OR if evaluating an unlearned model (need to use retain dataset)
     remove_forget_set = retrain_flag or (
-        unlearning_fraction is not None and 
+        unlearning_fraction is not None and
         unlearning_sample_selection_method is not None and
         retrain_checkpoint_idx_to_match is not None
     )
@@ -220,10 +264,19 @@ def run_recbole(
     if remove_forget_set:
         # remove unlearned interactions
         if "spam" in config and config["spam"]:
+            # Construct fraud sessions file path (same format as injection)
             unlearning_samples_path = os.path.join(
                 config["data_path"],
-                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+                f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
             )
+
+            # Fall back to legacy naming if new file doesn't exist
+            if not os.path.exists(unlearning_samples_path):
+                unlearning_samples_path = os.path.join(
+                    config["data_path"],
+                    f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+                )
+                logger.info(f"Using legacy spam sessions file path: {unlearning_samples_path}")
         elif "sensitive_category" in config and config['sensitive_category'] is not None:
             # Handle sensitive category unlearning
             sensitive_category = config['sensitive_category']

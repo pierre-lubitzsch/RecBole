@@ -327,9 +327,18 @@ def main(dataset, attack_type="bandwagon", target_strategy="unpopular",
     )
 
     fraud_df = generator.generate_fraud_sessions(sessions_to_add)
-    combined_df = generator.inject_fraud_sessions(fraud_df)
 
-    # Save fraud sessions separately (for unlearning)
+    # Calculate stats for verification (no need to save combined dataset)
+    total_sessions = df['session_id'].nunique() + fraud_df['session_id'].nunique()
+    total_clicks = len(df) + len(fraud_df)
+    fraud_ratio = fraud_df['session_id'].nunique() / total_sessions
+
+    print(f"\nFinal dataset statistics (if combined):")
+    print(f"  Total sessions: {total_sessions}")
+    print(f"  Total clicks: {total_clicks}")
+    print(f"  Fraud ratio: {fraud_ratio:.4f}")
+
+    # Save fraud sessions only (will be injected during training)
     dataset_name = os.path.basename(dataset) if '/' not in dataset else dataset
     fraud_output_path = f"{output_dir}/{dataset_name}_fraud_sessions_{attack_type}_{target_strategy}_ratio_{poisoning_ratio}_seed_{seed}.inter"
     fraud_df_renamed = fraud_df.copy()
@@ -340,17 +349,7 @@ def main(dataset, attack_type="bandwagon", target_strategy="unpopular",
     })
     fraud_df_renamed.to_csv(fraud_output_path, sep="\t", index=False)
     print(f"\nFraud sessions saved to: {fraud_output_path}")
-
-    # Save combined dataset (poisoned)
-    combined_output_path = f"{output_dir}/{dataset_name}_poisoned_{attack_type}_{target_strategy}_ratio_{poisoning_ratio}_seed_{seed}.inter"
-    combined_df_renamed = combined_df.copy()
-    combined_df_renamed = combined_df_renamed.rename(columns={
-        "session_id": "user_id:token",
-        "item_id": "item_id:token",
-        "timestamp": "timestamp:float"
-    })
-    combined_df_renamed.to_csv(combined_output_path, sep="\t", index=False)
-    print(f"Poisoned dataset saved to: {combined_output_path}")
+    print(f"Note: These will be automatically injected when training with --spam flag")
 
     # Save metadata
     metadata = {
