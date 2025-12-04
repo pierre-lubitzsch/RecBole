@@ -118,6 +118,11 @@ class Dataset(torch.utils.data.Dataset):
         self._get_preset()
         self._get_field_from_config()
         self._load_data(self.dataset_name, self.dataset_path)
+
+        # Inject fraud sessions BEFORE ID remapping if spam=True and not unlearning
+        if self.spam and not self.unlearning:
+            self._inject_fraud_sessions()
+
         self._init_alias()
         self._data_processing()
 
@@ -289,6 +294,42 @@ class Dataset(torch.utils.data.Dataset):
             token, dataset_path, FeatureSource.ITEM, "iid_field"
         )
         self._load_additional_feat(token, dataset_path)
+
+    def _inject_fraud_sessions(self):
+        """Inject fraud sessions into the dataset before ID remapping.
+
+        This method loads fraud sessions from a separate file and concatenates them
+        with the original interaction data. This must happen BEFORE ID remapping
+        so that both clean and fraud sessions are remapped together consistently.
+        """
+        import pandas as pd
+        import os
+
+        # Construct fraud sessions file path
+        unlearning_fraction = self.config['unlearning_fraction']
+        fraud_sessions_path = os.path.join(
+            self.config["data_path"],
+            f"{self.config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{unlearning_fraction}_seed_{self.config['unlearn_sample_selection_seed']}.inter"
+        )
+
+        if not os.path.exists(fraud_sessions_path):
+            self.logger.warning(f"Fraud sessions file not found: {fraud_sessions_path}")
+            self.logger.warning("Training on clean data only!")
+            return
+
+        self.logger.info(f"Injecting fraud sessions from: {fraud_sessions_path}")
+
+        # Load fraud sessions using the same method as original data
+        fraud_inter_feat = self._load_feat(fraud_sessions_path, FeatureSource.INTERACTION)
+
+        self.logger.info(f"Loaded {len(fraud_inter_feat)} fraud interactions")
+
+        # Concatenate with original interactions
+        orig_inter_df = self.inter_feat
+        combined_inter_df = pd.concat([orig_inter_df, fraud_inter_feat], ignore_index=True)
+
+        self.inter_feat = combined_inter_df
+        self.logger.info(f"Poisoned dataset created: {len(combined_inter_df)} total interactions")
 
     def _load_inter_feat(self, token, dataset_path):
         """Load interaction features.

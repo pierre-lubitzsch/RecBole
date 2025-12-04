@@ -201,65 +201,13 @@ def run_recbole(
     logger.info(config)
 
     # dataset filtering - always load base dataset
+    # Note: fraud sessions are now injected inside create_dataset() before ID remapping
     dataset = create_dataset(config, unlearning=False, spam=spam)
 
-    print("original dataset (clean)")
     logger.info(dataset)
 
     # Keep reference to original dataset for consistent ID mappings
     original_dataset = dataset
-
-    # INJECT FRAUD SESSIONS when spam=True and NOT retraining
-    # This adds fraudulent interactions to the clean dataset for training poisoned models
-    if spam and not retrain_flag and unlearning_fraction is not None:
-        logger.info("Spam mode: Injecting fraud sessions into training data...")
-
-        # Construct fraud sessions file path
-        fraud_sessions_path = os.path.join(
-            config["data_path"],
-            f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{unlearning_fraction}_seed_{config['unlearn_sample_selection_seed']}.inter"
-        )
-
-        if not os.path.exists(fraud_sessions_path):
-            # Try legacy naming
-            fraud_sessions_path = os.path.join(
-                config["data_path"],
-                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{unlearning_fraction}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
-            )
-
-        if os.path.exists(fraud_sessions_path):
-            logger.info(f"Loading fraud sessions from: {fraud_sessions_path}")
-
-            # Load fraud sessions
-            if config.task_type == "SBR":
-                with open(fraud_sessions_path, 'r') as f:
-                    header_line = f.readline().strip()
-                column_names = [col.split(':')[0] for col in header_line.split('\t')]
-                fraud_sessions = pd.read_csv(fraud_sessions_path, sep="\t", names=column_names, header=0)
-            elif config.task_type == "CF":
-                fraud_sessions = pd.read_csv(fraud_sessions_path, sep="\t", names=["user_id", "item_id", "rating", "timestamp"], header=0)
-            elif config.task_type == "NBR":
-                fraud_sessions = pd.read_csv(fraud_sessions_path, sep="\t", names=["user_id", "item_id", "timestamp"], header=0)
-
-            logger.info(f"Loaded {len(fraud_sessions)} fraud interactions")
-
-            # Combine original dataset with fraud sessions
-            # inter_feat is already a DataFrame at this stage
-            orig_inter_df = dataset.inter_feat
-
-            # Debug: Check what columns exist
-            logger.info(f"Original inter_feat columns: {list(orig_inter_df.columns)}")
-            logger.info(f"Fraud sessions columns: {list(fraud_sessions.columns)}")
-            logger.info(f"Dataset field2type keys: {list(dataset.field2type.keys())}")
-
-            combined_inter_df = pd.concat([orig_inter_df, fraud_sessions], ignore_index=True)
-
-            # Create new dataset with combined interactions
-            dataset = dataset.copy(combined_inter_df)
-            logger.info(f"Poisoned dataset created: {len(combined_inter_df)} total interactions")
-        else:
-            logger.warning(f"Fraud sessions file not found: {fraud_sessions_path}")
-            logger.warning("Training on clean data only!")
 
     # Remove forget set if retraining OR if evaluating an unlearned model (need to use retain dataset)
     remove_forget_set = retrain_flag or (
