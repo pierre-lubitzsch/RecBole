@@ -246,6 +246,12 @@ def run_recbole(
             # Combine original dataset with fraud sessions
             # inter_feat is already a DataFrame at this stage
             orig_inter_df = dataset.inter_feat
+
+            # Debug: Check what columns exist
+            logger.info(f"Original inter_feat columns: {list(orig_inter_df.columns)}")
+            logger.info(f"Fraud sessions columns: {list(fraud_sessions.columns)}")
+            logger.info(f"Dataset field2type keys: {list(dataset.field2type.keys())}")
+
             combined_inter_df = pd.concat([orig_inter_df, fraud_sessions], ignore_index=True)
 
             # Create new dataset with combined interactions

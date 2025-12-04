@@ -342,6 +342,7 @@ def main(dataset, attack_type="bandwagon", target_strategy="unpopular",
     dataset_name = os.path.basename(dataset) if '/' not in dataset else dataset
     fraud_output_path = f"{output_dir}/{dataset_name}_fraud_sessions_{attack_type}_{target_strategy}_ratio_{poisoning_ratio}_seed_{seed}.inter"
     fraud_df_renamed = fraud_df.copy()
+    # Keep session_id to match the base dataset format
     fraud_df_renamed = fraud_df_renamed.rename(columns={
         "session_id": "session_id:token",
         "item_id": "item_id:token",
