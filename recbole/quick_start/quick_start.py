@@ -401,6 +401,96 @@ def run_recbole(
     logger.info(set_color("best valid ", "yellow") + f": {best_valid_result}")
     logger.info(set_color("test result", "yellow") + f": {test_result}")
 
+    # For spam scenarios, also evaluate on unpoisoned data
+    unpoisoned_test_result = None
+    if spam and not remove_forget_set and not config["rmia_out_model_flag"]:
+        logger.info("\n" + "="*50)
+        logger.info("Evaluating on unpoisoned (clean) data...")
+        logger.info("="*50)
+
+        # Create unpoisoned dataset by removing fraud sessions
+        # Construct fraud sessions file path
+        unlearning_samples_path = os.path.join(
+            config["data_path"],
+            f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+        )
+
+        # Fall back to legacy naming if new file doesn't exist
+        if not os.path.exists(unlearning_samples_path):
+            unlearning_samples_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+            )
+            logger.info(f"Using legacy spam sessions file path: {unlearning_samples_path}")
+
+        if os.path.exists(unlearning_samples_path):
+            # Read header to infer column names dynamically
+            with open(unlearning_samples_path, 'r') as f:
+                header_line = f.readline().strip()
+
+            # Extract column names from header (e.g., "user_id:token" -> "user_id")
+            column_names = [col.split(':')[0] for col in header_line.split('\t')]
+
+            spam_sessions_df = pd.read_csv(
+                unlearning_samples_path,
+                sep="\t",
+                names=column_names,
+                header=0,
+            )
+
+            # Create mask to remove spam sessions from original dataset
+            spam_session_ids = set(spam_sessions_df['session_id'].unique())
+
+            # Get original dataset interactions
+            orig_inter_df = original_dataset.inter_feat
+            if hasattr(orig_inter_df, 'to_numpy'):
+                # It's still a pandas DataFrame
+                session_field = original_dataset.uid_field  # In SBR, uid_field is session_id
+                orig_session_ids = orig_inter_df[session_field].to_numpy()
+            else:
+                # It's already a torch tensor
+                session_field = original_dataset.uid_field
+                orig_session_ids = orig_inter_df[session_field].cpu().numpy()
+
+            # Create mask for unpoisoned data
+            unpoisoned_mask = ~pd.Series(orig_session_ids).isin(spam_session_ids).values
+
+            logger.info(f"Original dataset: {len(orig_session_ids)} interactions")
+            logger.info(f"Spam sessions: {len(spam_session_ids)} sessions")
+            logger.info(f"Unpoisoned dataset: {unpoisoned_mask.sum()} interactions")
+
+            # Create unpoisoned dataset
+            if hasattr(orig_inter_df, 'iloc'):
+                # Still a DataFrame
+                unpoisoned_inter_df = orig_inter_df.iloc[unpoisoned_mask]
+            else:
+                # It's a torch tensor - need to handle differently
+                # Convert to DataFrame first, apply mask, then recreate dataset
+                import torch
+                if isinstance(orig_inter_df, torch.Tensor):
+                    # This shouldn't happen at this stage, but handle it just in case
+                    logger.warning("inter_feat is already a tensor, cannot easily filter. Using full dataset.")
+                    unpoisoned_test_result = test_result
+                else:
+                    unpoisoned_inter_df = orig_inter_df.iloc[unpoisoned_mask]
+
+            if unpoisoned_test_result is None:  # Only if we successfully created the filtered dataset
+                unpoisoned_dataset = original_dataset.copy(unpoisoned_inter_df)
+                logger.info(unpoisoned_dataset)
+
+                # Create dataloaders for unpoisoned dataset
+                _, _, unpoisoned_test_data = data_preparation(config, unpoisoned_dataset, spam=False)
+
+                # Evaluate on unpoisoned data
+                unpoisoned_test_result = trainer.evaluate(
+                    unpoisoned_test_data, load_best_model=(saved and not eval_only) or eval_only, show_progress=False,
+                )
+
+                logger.info(set_color("test result (unpoisoned)", "yellow") + f": {unpoisoned_test_result}")
+        else:
+            logger.warning(f"Spam sessions file not found: {unlearning_samples_path}")
+            logger.warning("Skipping unpoisoned evaluation")
+
     total_end_time = time.time()
     total_time = total_end_time - total_start_time
 
@@ -412,6 +502,10 @@ def run_recbole(
         "best_valid_result": best_valid_result,
         "test_result": test_result,
     }
+
+    # Add unpoisoned test result if available
+    if unpoisoned_test_result is not None:
+        result["test_result_unpoisoned"] = unpoisoned_test_result
 
     # Sensitive item evaluation
     if "sensitive_category" in config and config['sensitive_category'] is not None:
