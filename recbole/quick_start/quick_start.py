@@ -466,7 +466,6 @@ def run_recbole(
             else:
                 # It's a torch tensor - need to handle differently
                 # Convert to DataFrame first, apply mask, then recreate dataset
-                import torch
                 if isinstance(orig_inter_df, torch.Tensor):
                     # This shouldn't happen at this stage, but handle it just in case
                     logger.warning("inter_feat is already a tensor, cannot easily filter. Using full dataset.")
