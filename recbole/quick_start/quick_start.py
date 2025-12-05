@@ -279,8 +279,10 @@ def run_recbole(
                 header=0,
             )
 
+        uid_field, iid_field = original_dataset.uid_field, original_dataset.iid_field
+
         pairs_by_user = (
-            unlearning_samples.groupby("user_id")["item_id"]
+            unlearning_samples.groupby(uid_field)[iid_field]
             .agg(list)
             .to_dict()
         )
@@ -288,8 +290,6 @@ def run_recbole(
         unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
         users_unlearned = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
         removed_mask = np.zeros(len(dataset.inter_feat), dtype=bool)
-
-        uid_field, iid_field = original_dataset.uid_field, original_dataset.iid_field
         user_ids = dataset.inter_feat[uid_field].to_numpy()
         item_ids = dataset.inter_feat[iid_field].to_numpy()
 
