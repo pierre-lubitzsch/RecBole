@@ -442,15 +442,19 @@ def run_recbole(
             spam_session_ids = set(spam_sessions_df['session_id'].unique())
 
             # Get original dataset interactions
-            orig_inter_df = original_dataset.inter_feat
-            if hasattr(orig_inter_df, 'to_numpy'):
-                # It's still a pandas DataFrame
-                session_field = original_dataset.uid_field  # In SBR, uid_field is session_id
-                orig_session_ids = orig_inter_df[session_field].to_numpy()
+            orig_inter_feat = original_dataset.inter_feat
+            session_field = original_dataset.uid_field  # In SBR, uid_field is session_id
+
+            # Handle both Interaction objects and DataFrames
+            if hasattr(orig_inter_feat, 'interaction'):
+                # It's an Interaction object
+                orig_session_ids = orig_inter_feat[session_field].cpu().numpy()
+            elif hasattr(orig_inter_feat, 'to_numpy'):
+                # It's a pandas DataFrame
+                orig_session_ids = orig_inter_feat[session_field].to_numpy()
             else:
                 # It's already a torch tensor
-                session_field = original_dataset.uid_field
-                orig_session_ids = orig_inter_df[session_field].cpu().numpy()
+                orig_session_ids = orig_inter_feat[session_field].cpu().numpy()
 
             # Create mask for unpoisoned data
             unpoisoned_mask = ~pd.Series(orig_session_ids).isin(spam_session_ids).values
@@ -459,22 +463,22 @@ def run_recbole(
             logger.info(f"Spam sessions: {len(spam_session_ids)} sessions")
             logger.info(f"Unpoisoned dataset: {unpoisoned_mask.sum()} interactions")
 
-            # Create unpoisoned dataset
-            if hasattr(orig_inter_df, 'iloc'):
-                # Still a DataFrame
-                unpoisoned_inter_df = orig_inter_df.iloc[unpoisoned_mask]
+            # Create unpoisoned dataset by filtering using the mask
+            # For Interaction objects, use indexing; for DataFrames, use iloc
+            if hasattr(orig_inter_feat, 'interaction'):
+                # It's an Interaction object - use boolean indexing
+                unpoisoned_indices = np.where(unpoisoned_mask)[0]
+                unpoisoned_inter_feat = orig_inter_feat[unpoisoned_indices]
+            elif hasattr(orig_inter_feat, 'iloc'):
+                # It's a DataFrame
+                unpoisoned_inter_feat = orig_inter_feat.iloc[unpoisoned_mask]
             else:
-                # It's a torch tensor - need to handle differently
-                # Convert to DataFrame first, apply mask, then recreate dataset
-                if isinstance(orig_inter_df, torch.Tensor):
-                    # This shouldn't happen at this stage, but handle it just in case
-                    logger.warning("inter_feat is already a tensor, cannot easily filter. Using full dataset.")
-                    unpoisoned_test_result = test_result
-                else:
-                    unpoisoned_inter_df = orig_inter_df.iloc[unpoisoned_mask]
+                logger.warning("Unknown inter_feat type, cannot filter. Skipping unpoisoned evaluation.")
+                unpoisoned_test_result = test_result
+                unpoisoned_inter_feat = None
 
-            if unpoisoned_test_result is None:  # Only if we successfully created the filtered dataset
-                unpoisoned_dataset = original_dataset.copy(unpoisoned_inter_df)
+            if unpoisoned_inter_feat is not None:
+                unpoisoned_dataset = original_dataset.copy(unpoisoned_inter_feat)
                 logger.info(unpoisoned_dataset)
 
                 # Create dataloaders for unpoisoned dataset
