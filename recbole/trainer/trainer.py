@@ -537,8 +537,10 @@ class Trainer(AbstractTrainer):
             else:
                 for i in range(len(cur_grads)):
                     grads_retain[i] += cur_grads[i]
-        
-        k_more = max(0, neg_grad_retain_sample_size - len(clean_forget_data.dataset))
+
+        # Handle empty clean_forget_data
+        clean_forget_data_length = 0 if not clean_forget_data else len(clean_forget_data.dataset)
+        k_more = max(0, neg_grad_retain_sample_size - clean_forget_data_length)
 
         for batch_idx, interaction in enumerate(retain_train_data):
             if k_more <= 0:
@@ -1192,11 +1194,26 @@ class Trainer(AbstractTrainer):
         forget_users = []
         forget_items = []
 
-        for batch in forget_data:
-            users = batch[forget_dataset.uid_field].cpu().numpy()
-            items = batch[forget_dataset.iid_field].cpu().numpy()
-            forget_users.extend(users)
-            forget_items.extend(items)
+        # Handle empty forget_dataset (all user interactions are sensitive)
+        if forget_dataset is None:
+            # Use forget_data to get uid/iid fields
+            for batch in forget_data:
+                forget_dataset_temp = forget_data.dataset
+                users = batch[forget_dataset_temp.uid_field].cpu().numpy()
+                items = batch[forget_dataset_temp.iid_field].cpu().numpy()
+                forget_users.extend(users)
+                forget_items.extend(items)
+                break  # Just need to get the fields once
+            uid_field = forget_dataset_temp.uid_field
+            iid_field = forget_dataset_temp.iid_field
+        else:
+            for batch in forget_data:
+                users = batch[forget_dataset.uid_field].cpu().numpy()
+                items = batch[forget_dataset.iid_field].cpu().numpy()
+                forget_users.extend(users)
+                forget_items.extend(items)
+            uid_field = forget_dataset.uid_field
+            iid_field = forget_dataset.iid_field
 
         forget_edges = set(zip(forget_users, forget_items))
         print(f"[GIF] Building modified adjacency matrix excluding {len(forget_edges)} forget edges...")
@@ -1211,9 +1228,14 @@ class Trainer(AbstractTrainer):
         retain_items = retain_inter_feat[retain_dataset.iid_field].numpy()
 
         # Get forget interactions
-        forget_inter_feat = forget_dataset.inter_feat
-        forget_users_all = forget_inter_feat[forget_dataset.uid_field].numpy()
-        forget_items_all = forget_inter_feat[forget_dataset.iid_field].numpy()
+        if forget_dataset is None:
+            # If all user interactions are sensitive, there are no clean forget interactions
+            forget_users_all = np.array([], dtype=retain_users.dtype)
+            forget_items_all = np.array([], dtype=retain_items.dtype)
+        else:
+            forget_inter_feat = forget_dataset.inter_feat
+            forget_users_all = forget_inter_feat[forget_dataset.uid_field].numpy()
+            forget_items_all = forget_inter_feat[forget_dataset.iid_field].numpy()
 
         # Combine to get original interactions
         all_users = np.concatenate([retain_users, forget_users_all])
@@ -1923,8 +1945,10 @@ class Trainer(AbstractTrainer):
 
                     # Collect user IDs already in k-hop batches to avoid duplicates
                     k_hop_user_ids = set()
+                    # Handle empty clean_forget_data
+                    uid_field = forget_data.dataset.uid_field if not clean_forget_data else clean_forget_data.dataset.uid_field
                     for batch in k_hop_batches:
-                        k_hop_user_ids.update(batch[clean_forget_data.dataset.uid_field].numpy())
+                        k_hop_user_ids.update(batch[uid_field].numpy())
 
                     # Sample from retain_train_data, excluding k-hop users
                     samples_collected = 0
@@ -1979,11 +2003,13 @@ class Trainer(AbstractTrainer):
         if has_graph:
             print(f"[CEU] Model has graph structure ({graph_attr_name}). Building modified adjacency matrix...")
             # Build modified adjacency matrix without forget edges
+            # Handle empty clean_forget_data
+            clean_dataset = None if not clean_forget_data else clean_forget_data.dataset
             modified_adj_matrix = self._build_modified_adj_matrix(
                 self.model,
                 forget_data,
                 retain_train_data.dataset,
-                clean_forget_data.dataset
+                clean_dataset
             )
 
             # Use context manager to temporarily replace the graph during gradient computation
@@ -2218,7 +2244,9 @@ class Trainer(AbstractTrainer):
         # Note: We subtract because we want to remove the influence
         print(f"[CEU] Step 7: Applying parameter updates with noise...")
         with torch.no_grad():
-            num_nodes = len(forget_data.dataset) + len(clean_forget_data.dataset)
+            # Handle empty clean_forget_data
+            clean_forget_data_length = 0 if not clean_forget_data else len(clean_forget_data.dataset)
+            num_nodes = len(forget_data.dataset) + clean_forget_data_length
             for p, noisy_delta_p in zip(param_list, noisy_influence_estimate):
                 # Scale by 1/|V| as per Equation 11 in the paper
                 p.data -= noisy_delta_p / num_nodes
@@ -2946,9 +2974,12 @@ class Trainer(AbstractTrainer):
         neg_grads = None
         pos_grads = None
 
-        forget_sample_count = max(1, len(forget_data.dataset) - len(clean_forget_data.dataset))
-        print(f"forget data length: {len(forget_data.dataset)}, clean forget data length: {len(clean_forget_data.dataset)}")
-        retain_count = max(1, retain_samples_used_for_update * forget_sample_count - len(clean_forget_data.dataset))
+        # Handle empty clean_forget_data (when all user interactions are sensitive)
+        clean_forget_data_length = 0 if not clean_forget_data else len(clean_forget_data.dataset)
+
+        forget_sample_count = max(1, len(forget_data.dataset) - clean_forget_data_length)
+        print(f"forget data length: {len(forget_data.dataset)}, clean forget data length: {clean_forget_data_length}")
+        retain_count = max(1, retain_samples_used_for_update * forget_sample_count - clean_forget_data_length)
         
         # calculate grads for forget data which we want to forget
         for batch_idx, interaction in enumerate(forget_data):
@@ -3139,8 +3170,11 @@ class Trainer(AbstractTrainer):
         Solve  (H + lambda I) x = v  for x with conjugate gradients.
         Returns: (x, diverged_flag)
         """
+        # Handle empty clean_forget_data
+        clean_forget_data_length = 0 if not clean_forget_data else len(clean_forget_data.dataset)
+
         # Total number of iterations: one pass over the data by default
-        max_iter = max_iter or math.ceil((len(clean_forget_data.dataset) + len(retain_train_data.dataset)) / bs)
+        max_iter = max_iter or math.ceil((clean_forget_data_length + len(retain_train_data.dataset)) / bs)
 
         # --- initialisation ------------------------------------------------------
         x      = [torch.zeros_like(v) for v in v_list]   # x_theta
@@ -3148,7 +3182,7 @@ class Trainer(AbstractTrainer):
         p      = [ri.clone() for ri in r]                # p_theta = r_theta
         rs_old = self._dot_list(r, r).item()
 
-        samples_wanted = samples_wanted_constant * max(1, len(forget_data.dataset) - len(clean_forget_data.dataset))
+        samples_wanted = samples_wanted_constant * max(1, len(forget_data.dataset) - clean_forget_data_length)
         samples_seen = 0
         break_flag = False
 

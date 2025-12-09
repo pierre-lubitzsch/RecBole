@@ -1078,7 +1078,14 @@ def unlearn_recbole(
         )
 
         forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
-        clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+
+        # Handle case where all user interactions are sensitive (clean_forget_ds is empty)
+        if len(clean_forget_ds) == 0:
+            print(f"Note: All {len(cur_forget_ds)} interactions for user {u} are sensitive. Using empty clean_forget_data.")
+            # Create an empty dataloader-like structure that can be iterated but yields nothing
+            clean_forget_data = []
+        else:
+            clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
 
         retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
 
