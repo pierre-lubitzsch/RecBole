@@ -827,25 +827,33 @@ class Trainer(AbstractTrainer):
         # Second stage: Contrastive learning between forget and retain data
         for j in range(unlearn_iters_contrastive):
             losses = []
-            
+
             first_round_start_time = time()
-            
+
             # Use a slice of the pre-computed indices for this iteration
             iter_offset = j * len(forget_data) * batch_size
-            
-            for batch_idx, (forget_interaction, clean_forget_interaction) in enumerate(zip(forget_data, clean_forget_data)):
+
+            # Handle empty clean_forget_data
+            if not clean_forget_data:
+                print(f"[Fanchuan] Warning: clean_forget_data is empty, skipping clean contrastive loss")
+
+            for batch_idx, forget_interaction in enumerate(forget_data):
                 # Get retain interaction using pre-computed indices
                 start_idx = iter_offset + batch_idx * batch_size
                 end_idx = start_idx + batch_size
                 retain_batch_indices = large_shuffled_indices[start_idx:end_idx]
-                
+
                 retain_train_data_interaction = retain_train_data.dataset[retain_batch_indices]
-                
+
                 forget_interaction = forget_interaction.to(self.device)
-                clean_forget_interaction = clean_forget_interaction.to(self.device)
                 retain_interaction = retain_train_data_interaction.to(self.device)
 
-                loss = self.unlearn_iterative_contrastive(forget_interaction, clean_forget_interaction, self.model)
+                loss = 0
+                # Only use clean_forget_data if it's not empty
+                if clean_forget_data:
+                    clean_forget_interaction = list(clean_forget_data)[batch_idx].to(self.device)
+                    loss = self.unlearn_iterative_contrastive(forget_interaction, clean_forget_interaction, self.model)
+
                 loss += self.unlearn_iterative_contrastive(forget_interaction, retain_interaction, self.model)
                 losses.append(loss)
 
@@ -1927,7 +1935,7 @@ class Trainer(AbstractTrainer):
             print(f"[CEU] Found {len(k_hop_neighbor_ids)} users in {ceu_k_hops}-hop neighborhood (V_E_UL)")
 
             # Filter clean_forget_data to only k-hop neighbors (get all k-hop samples first)
-            if len(k_hop_neighbor_ids) > 0:
+            if len(k_hop_neighbor_ids) > 0 and clean_forget_data:
                 k_hop_batches = self._filter_retain_data_by_users(
                     clean_forget_data,
                     k_hop_neighbor_ids,
@@ -1986,10 +1994,18 @@ class Trainer(AbstractTrainer):
         else:
             # Use clean_forget_data directly (when ceu_use_random_retain_samples=True or no original_dataset)
             print(f"[CEU] Using clean_forget_data directly (random sampling)")
-            for batch_idx, batch in enumerate(clean_forget_data):
-                if batch_idx * clean_forget_data.batch_size >= ceu_hessian_samples:
-                    break
-                k_hop_batches.append(batch)
+            if clean_forget_data:
+                for batch_idx, batch in enumerate(clean_forget_data):
+                    if batch_idx * clean_forget_data.batch_size >= ceu_hessian_samples:
+                        break
+                    k_hop_batches.append(batch)
+            else:
+                print(f"[CEU] Warning: clean_forget_data is empty, using random sampling from retain_train_data")
+                # Fallback to random sampling from retain_train_data
+                for batch_idx, batch in enumerate(retain_train_data):
+                    if batch_idx * retain_train_data.batch_size >= ceu_hessian_samples:
+                        break
+                    k_hop_batches.append(batch)
 
         # Gradients on remaining graph (without removed edges)
         # IMPORTANT: For GNN models, we need to mask the forget edges in the graph structure
