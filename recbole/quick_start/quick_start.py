@@ -1104,7 +1104,6 @@ def unlearn_recbole(
 
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
         elif unlearning_algorithm == "kookmin":
             retain_batch_size = config["train_batch_size"]
@@ -1120,7 +1119,6 @@ def unlearn_recbole(
 
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
         elif unlearning_algorithm == "fanchuan":
             retain_batch_size = config["train_batch_size"]
@@ -1133,7 +1131,6 @@ def unlearn_recbole(
 
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
         elif unlearning_algorithm == "gif":
             retain_batch_size = config["train_batch_size"]
@@ -1150,7 +1147,6 @@ def unlearn_recbole(
 
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
         elif unlearning_algorithm == "ceu":
             retain_batch_size = config["train_batch_size"]
@@ -1167,7 +1163,6 @@ def unlearn_recbole(
 
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
         elif unlearning_algorithm == "idea":
             retain_batch_size = config["train_batch_size"]
@@ -1184,7 +1179,6 @@ def unlearn_recbole(
 
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            sessions_needed = int(total_samples_needed / avg_session_length) + 1
 
         elif unlearning_algorithm == "seif":
             retain_batch_size = config["train_batch_size"]
@@ -1199,11 +1193,12 @@ def unlearn_recbole(
 
             # Cap to 10% of dataset
             total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            sessions_needed = int(total_samples_needed / avg_session_length) + 1
+            # Note: We pass total_samples_needed directly as it represents interactions needed
+            # The function will collect full user sessions until we have enough interactions
 
         # Get complete sessions
         retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
-            sessions_needed,
+            total_samples_needed,  # Pass total interactions needed, not sessions
             unlearned_users_before,
             user_sample_pool,
             pool_cursor,
