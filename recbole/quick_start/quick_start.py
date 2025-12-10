@@ -271,47 +271,177 @@ def run_recbole(
                 names=["user_id", "item_id", "rating", "timestamp"],
                 header=0,
             )
-        elif config.task_type == "NBR": # TODO: maybe need to change format
-            unlearning_samples = pd.read_csv(
-                unlearning_samples_path,
-                sep="\t",
-                names=["user_id", "item_id", "timestamp"],
-                header=0,
+        elif config.task_type == "NBR":
+            # For NBR, we need to handle this differently:
+            # 1. Load user IDs from pickle/json file (not user-item pairs)
+            # 2. Reload dataset with sensitive items removed from baskets
+            # This is handled in the NBR-specific dataset recreation below
+            pass
+
+        # For NBR task, we need to recreate the dataset with cleaned baskets
+        if config.task_type == "NBR":
+            # Construct path to unlearning user IDs file (pkl or json)
+            unlearning_users_path_pkl = unlearning_samples_path.replace('.inter', '.pkl')
+            unlearning_users_path_json = unlearning_samples_path.replace('.inter', '.json')
+
+            # Try to load user IDs from pickle or json
+            unlearning_user_ids = None
+            if os.path.exists(unlearning_users_path_pkl):
+                logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_pkl}")
+                import pickle
+                with open(unlearning_users_path_pkl, 'rb') as f:
+                    unlearning_user_ids = pickle.load(f)
+            elif os.path.exists(unlearning_users_path_json):
+                logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_json}")
+                import json
+                with open(unlearning_users_path_json, 'r') as f:
+                    unlearning_user_ids = json.load(f)
+            else:
+                raise FileNotFoundError(
+                    f"NBR unlearning user IDs file not found. Tried:\n"
+                    f"  - {unlearning_users_path_pkl}\n"
+                    f"  - {unlearning_users_path_json}\n"
+                    f"Please create unlearning sets using create_nbr_unlearning_sets_user_ids.py"
+                )
+
+            # Apply checkpoint filtering if needed
+            if retrain_checkpoint_idx_to_match is not None and unlearning_user_ids:
+                unlearning_checkpoints = [
+                    len(unlearning_user_ids) // 4,
+                    len(unlearning_user_ids) // 2,
+                    3 * len(unlearning_user_ids) // 4,
+                    len(unlearning_user_ids) - 1
+                ]
+                users_to_unlearn = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
+                unlearning_user_ids = sorted(unlearning_user_ids)[:users_to_unlearn + 1]
+
+            logger.info(f"NBR unlearning: {len(unlearning_user_ids)} users to clean")
+
+            # Now we need to create a cleaned merged JSON file
+            # Load the sensitive items to remove
+            if "sensitive_category" in config and config['sensitive_category'] is not None:
+                sensitive_category = config['sensitive_category']
+
+                # Load sensitive items from file
+                sensitive_items_file = os.path.join(
+                    config["data_path"],
+                    f"sensitive_asins_{sensitive_category}.txt"
+                )
+
+                # Try alternative naming conventions
+                if not os.path.exists(sensitive_items_file):
+                    sensitive_items_file = os.path.join(
+                        config["data_path"],
+                        f"sensitive_products_{sensitive_category}.txt"
+                    )
+
+                if not os.path.exists(sensitive_items_file):
+                    raise FileNotFoundError(
+                        f"Sensitive items file not found for category '{sensitive_category}'. Tried:\n"
+                        f"  - sensitive_asins_{sensitive_category}.txt\n"
+                        f"  - sensitive_products_{sensitive_category}.txt"
+                    )
+
+                logger.info(f"Loading sensitive items from: {sensitive_items_file}")
+                with open(sensitive_items_file, 'r') as f:
+                    sensitive_items = set(int(line.strip()) for line in f if line.strip())
+
+                logger.info(f"Loaded {len(sensitive_items)} sensitive items for category '{sensitive_category}'")
+
+                # Create cleaned merged JSON by removing sensitive items from baskets
+                original_merged_path = os.path.join(
+                    config["data_path"],
+                    f"{config['dataset']}_merged.json"
+                )
+
+                logger.info(f"Loading original merged data from: {original_merged_path}")
+                import json
+                with open(original_merged_path, 'r') as f:
+                    merged_data = json.load(f)
+
+                # Clean baskets for users in unlearning set
+                cleaned_data = {}
+                users_filtered_out = 0
+
+                for user_id, baskets in merged_data.items():
+                    if user_id in unlearning_user_ids:
+                        # Remove sensitive items from this user's baskets
+                        clean_baskets = []
+                        for basket in baskets:
+                            clean_basket = [item for item in basket if item not in sensitive_items]
+                            if len(clean_basket) > 0:  # Only keep non-empty baskets
+                                clean_baskets.append(clean_basket)
+
+                        # Keep user only if they still have >= 4 baskets
+                        if len(clean_baskets) >= 4:
+                            cleaned_data[user_id] = clean_baskets
+                        else:
+                            users_filtered_out += 1
+                    else:
+                        # User not in unlearning set, keep all baskets
+                        if len(baskets) >= 4:
+                            cleaned_data[user_id] = baskets
+
+                logger.info(f"NBR cleaning: {users_filtered_out} users filtered out (< 4 baskets after removal)")
+                logger.info(f"NBR retain dataset: {len(cleaned_data)} users")
+
+                # Save cleaned data to temporary file
+                import tempfile
+                temp_merged_file = tempfile.NamedTemporaryFile(
+                    mode='w',
+                    suffix='.json',
+                    delete=False,
+                    dir=config["data_path"]
+                )
+                json.dump(cleaned_data, temp_merged_file)
+                temp_merged_file.close()
+
+                logger.info(f"Created temporary cleaned merged file: {temp_merged_file.name}")
+
+                # Update config to point to cleaned file
+                config["NEXT_BASKET_JSON"] = temp_merged_file.name
+
+                # Recreate dataset with cleaned data
+                dataset = create_dataset(config, unlearning=False, spam=spam)
+
+                # Clean up temporary file
+                os.unlink(temp_merged_file.name)
+                logger.info("Cleaned up temporary merged file")
+        else:
+            # For CF and SBR, use the original logic
+            uid_field, iid_field = original_dataset.uid_field, original_dataset.iid_field
+
+            pairs_by_user = (
+                unlearning_samples.groupby(uid_field)[iid_field]
+                .agg(list)
+                .to_dict()
             )
 
-        uid_field, iid_field = original_dataset.uid_field, original_dataset.iid_field
+            unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
+            users_unlearned = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
+            removed_mask = np.zeros(len(dataset.inter_feat), dtype=bool)
+            user_ids = dataset.inter_feat[uid_field].to_numpy()
+            item_ids = dataset.inter_feat[iid_field].to_numpy()
 
-        pairs_by_user = (
-            unlearning_samples.groupby(uid_field)[iid_field]
-            .agg(list)
-            .to_dict()
-        )
+            pairs_by_user_unlearned = sorted(pairs_by_user.items())[:users_unlearned + 1]
 
-        unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
-        users_unlearned = unlearning_checkpoints[retrain_checkpoint_idx_to_match]
-        removed_mask = np.zeros(len(dataset.inter_feat), dtype=bool)
-        user_ids = dataset.inter_feat[uid_field].to_numpy()
-        item_ids = dataset.inter_feat[iid_field].to_numpy()
+            for unlearn_request_idx, (u_token, forget_items_tokens) in enumerate(pairs_by_user_unlearned):
+                # Convert tokens to internal IDs using original_dataset to ensure consistent mappings
+                try:
+                    u_id = original_dataset.token2id(uid_field, str(u_token))
+                except ValueError:
+                    logger.warning(f"User token {u_token} not found in dataset, skipping")
+                    continue
 
-        pairs_by_user_unlearned = sorted(pairs_by_user.items())[:users_unlearned + 1]
+                forget_items_ids = [original_dataset.token2id(iid_field, str(item_token)) for item_token in forget_items_tokens]
 
-        for unlearn_request_idx, (u_token, forget_items_tokens) in enumerate(pairs_by_user_unlearned):
-            # Convert tokens to internal IDs using original_dataset to ensure consistent mappings
-            try:
-                u_id = original_dataset.token2id(uid_field, str(u_token))
-            except ValueError:
-                logger.warning(f"User token {u_token} not found in dataset, skipping")
-                continue
+                all_idx = np.where(user_ids == u_id)[0]
+                mask = np.isin(item_ids[all_idx], forget_items_ids)
+                # Mark the forget items (interactions to remove) as True
+                removed_mask[all_idx[mask]] = True
 
-            forget_items_ids = [original_dataset.token2id(iid_field, str(item_token)) for item_token in forget_items_tokens]
-            
-            all_idx = np.where(user_ids == u_id)[0]
-            mask = np.isin(item_ids[all_idx], forget_items_ids)
-            # Mark the forget items (interactions to remove) as True
-            removed_mask[all_idx[mask]] = True
-
-        # Keep only interactions that are in the retain set
-        dataset = dataset.copy(dataset.inter_feat[~removed_mask])
+            # Keep only interactions that are in the retain set
+            dataset = dataset.copy(dataset.inter_feat[~removed_mask])
 
         print("retain dataset")
         logger.info(dataset)
@@ -885,8 +1015,43 @@ def unlearn_recbole(
             names=["user_id", "item_id", "rating", "timestamp"],
             header=0,
         )
+    elif config.task_type == "NBR":
+        # For NBR, load user IDs from pickle/json file
+        unlearning_users_path_pkl = unlearning_samples_path.replace('.inter', '.pkl')
+        unlearning_users_path_json = unlearning_samples_path.replace('.inter', '.json')
+
+        unlearning_user_ids = None
+        if os.path.exists(unlearning_users_path_pkl):
+            logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_pkl}")
+            import pickle
+            with open(unlearning_users_path_pkl, 'rb') as f:
+                unlearning_user_ids = pickle.load(f)
+        elif os.path.exists(unlearning_users_path_json):
+            logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_json}")
+            import json
+            with open(unlearning_users_path_json, 'r') as f:
+                unlearning_user_ids = json.load(f)
+        else:
+            raise FileNotFoundError(
+                f"NBR unlearning user IDs file not found. Tried:\n"
+                f"  - {unlearning_users_path_pkl}\n"
+                f"  - {unlearning_users_path_json}\n"
+                f"Please create unlearning sets using create_nbr_unlearning_sets_user_ids.py"
+            )
+
+        logger.info(f"Loaded {len(unlearning_user_ids)} user IDs for NBR unlearning")
+
+        # For NBR, we need to create a DataFrame with user_id and a dummy item_id
+        # since the unlearning logic expects pairs_by_user format
+        # However, for NBR we'll handle it differently - we'll create a dict mapping user_id to []
+        # to indicate we're unlearning all sensitive items for that user
+        # Create a DataFrame to maintain compatibility with existing code structure
+        unlearning_samples = pd.DataFrame({
+            'user_id': unlearning_user_ids,
+            'item_id': [[] for _ in unlearning_user_ids]  # Empty list for each user
+        })
     else:
-        raise ValueError(f"Unsupported task_type: {config.task_type}. Only 'SBR' and 'CF' are supported.")
+        raise ValueError(f"Unsupported task_type: {config.task_type}. Only 'SBR', 'CF', and 'NBR' are supported.")
 
     print("loaded unlearning samples")
 
