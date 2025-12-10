@@ -317,6 +317,8 @@ def run_recbole(
 
             logger.info(f"NBR unlearning: {len(unlearning_user_ids)} users to clean")
 
+            unlearning_user_ids_set = set(unlearning_user_ids)
+
             # Now we need to create a cleaned merged JSON file
             # Load the sensitive items to remove
             if "sensitive_category" in config and config['sensitive_category'] is not None:
@@ -359,12 +361,14 @@ def run_recbole(
                 with open(original_merged_path, 'r') as f:
                     merged_data = json.load(f)
 
+                logger.info(f"Processing {len(merged_data)} users to create cleaned dataset...")
+
                 # Clean baskets for users in unlearning set
                 cleaned_data = {}
                 users_filtered_out = 0
 
                 for user_id, baskets in merged_data.items():
-                    if user_id in unlearning_user_ids:
+                    if user_id in unlearning_user_ids_set:
                         # Remove sensitive items from this user's baskets
                         clean_baskets = []
                         for basket in baskets:
