@@ -523,20 +523,22 @@ class Trainer(AbstractTrainer):
                 for i in range(len(cur_grads)):
                     grads_forget[i] += cur_grads[i]
 
-        for batch_idx, interaction in enumerate(clean_forget_data):
-            interaction = interaction.to(self.device)
-            cur_grads = self._batch_grad(
-                self.model,
-                interaction,
-                param_list,
-                loss_func,
-                average_scale=neg_grad_retain_sample_size,
-            )
-            if len(grads_retain) == 0:
-                grads_retain = [g for g in cur_grads]
-            else:
-                for i in range(len(cur_grads)):
-                    grads_retain[i] += cur_grads[i]
+        # Only process clean_forget_data if it's not None/empty
+        if clean_forget_data is not None:
+            for batch_idx, interaction in enumerate(clean_forget_data):
+                interaction = interaction.to(self.device)
+                cur_grads = self._batch_grad(
+                    self.model,
+                    interaction,
+                    param_list,
+                    loss_func,
+                    average_scale=neg_grad_retain_sample_size,
+                )
+                if len(grads_retain) == 0:
+                    grads_retain = [g for g in cur_grads]
+                else:
+                    for i in range(len(cur_grads)):
+                        grads_retain[i] += cur_grads[i]
 
         # Handle empty clean_forget_data
         clean_forget_data_length = 0 if not clean_forget_data else len(clean_forget_data.dataset)
@@ -3009,15 +3011,16 @@ class Trainer(AbstractTrainer):
         
         # calculate grads for the cleaned forget data (forgotten interactions are removed)
         clean_forget_data_size = 0
-        for batch_idx, interaction in enumerate(clean_forget_data):
-            clean_forget_data_size += len(interaction)
-            interaction = interaction.to(self.device)
-            cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
-            if pos_grads is None:
-                pos_grads = [g for g in cur_grads]
-            else:
-                for i in range(len(cur_grads)):
-                    pos_grads[i] += cur_grads[i]
+        if clean_forget_data is not None:
+            for batch_idx, interaction in enumerate(clean_forget_data):
+                clean_forget_data_size += len(interaction)
+                interaction = interaction.to(self.device)
+                cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
+                if pos_grads is None:
+                    pos_grads = [g for g in cur_grads]
+                else:
+                    for i in range(len(cur_grads)):
+                        pos_grads[i] += cur_grads[i]
         
         
         # get retain grads from the retain data to prevent catastrophic forgetting
@@ -3202,52 +3205,54 @@ class Trainer(AbstractTrainer):
         samples_seen = 0
         break_flag = False
 
-        for interaction in clean_forget_data:
-            if break_flag:
-                break
-            for i in range(0, len(interaction), bs):
-                batch = interaction[i : i + bs]
-                if samples_seen >= samples_wanted:
-                    break_flag = True
+        # Only process clean_forget_data if it's not None
+        if clean_forget_data is not None:
+            for interaction in clean_forget_data:
+                if break_flag:
                     break
-                interaction = interaction.to(self.device)
-                interaction = interaction[:samples_wanted - samples_seen]
-                samples_seen += len(interaction)
-                batch = interaction
+                for i in range(0, len(interaction), bs):
+                    batch = interaction[i : i + bs]
+                    if samples_seen >= samples_wanted:
+                        break_flag = True
+                        break
+                    interaction = interaction.to(self.device)
+                    interaction = interaction[:samples_wanted - samples_seen]
+                    samples_seen += len(interaction)
+                    batch = interaction
 
-                q = self._hvp_dataset(
-                    model, batch,
-                    p, param_list,
-                    average=True,
-                )
-                # Check if HVP computation failed
-                if q is None:
-                    self.logger.warning(f"[CG] HVP computation failed at clean_forget iteration {i // bs}, stopping CG solver")
-                    break_flag = True
-                    break
+                    q = self._hvp_dataset(
+                        model, batch,
+                        p, param_list,
+                        average=True,
+                    )
+                    # Check if HVP computation failed
+                    if q is None:
+                        self.logger.warning(f"[CG] HVP computation failed at clean_forget iteration {i // bs}, stopping CG solver")
+                        break_flag = True
+                        break
 
-                # add lambda I term
-                q = [qi + damping * pi for qi, pi in zip(q, p)]
+                    # add lambda I term
+                    q = [qi + damping * pi for qi, pi in zip(q, p)]
 
-                pq_dot = self._dot_list(p, q).item()
-                # Use epsilon threshold instead of exact zero comparison for numerical stability
-                if abs(pq_dot) < 1e-10:
-                    # p and q are nearly orthogonal, we cannot proceed
-                    print(f"[CG]  p and q are nearly orthogonal (dot={pq_dot}) at clean_forget iteration {i // bs}, stopping.")
-                    break
+                    pq_dot = self._dot_list(p, q).item()
+                    # Use epsilon threshold instead of exact zero comparison for numerical stability
+                    if abs(pq_dot) < 1e-10:
+                        # p and q are nearly orthogonal, we cannot proceed
+                        print(f"[CG]  p and q are nearly orthogonal (dot={pq_dot}) at clean_forget iteration {i // bs}, stopping.")
+                        break
 
-                # Check for NaN/Inf in dot product
-                if math.isnan(pq_dot) or math.isinf(pq_dot):
-                    self.logger.warning(f"[CG] NaN or Inf detected in p*q dot product at clean_forget iteration {i // bs}")
-                    break
+                    # Check for NaN/Inf in dot product
+                    if math.isnan(pq_dot) or math.isinf(pq_dot):
+                        self.logger.warning(f"[CG] NaN or Inf detected in p*q dot product at clean_forget iteration {i // bs}")
+                        break
 
-                alpha = rs_old / pq_dot
+                    alpha = rs_old / pq_dot
 
-                # x_{k+1}  =  x_k + alpha p_k
-                x = self._add_scaled(x, p, alpha)
+                    # x_{k+1}  =  x_k + alpha p_k
+                    x = self._add_scaled(x, p, alpha)
 
-                # r_{k+1}  =  r_k - alpha q
-                r = self._add_scaled(r, q, -alpha)
+                    # r_{k+1}  =  r_k - alpha q
+                    r = self._add_scaled(r, q, -alpha)
 
                 rs_new = self._dot_list(r, r).item()
                 if math.sqrt(rs_new) < tol:
