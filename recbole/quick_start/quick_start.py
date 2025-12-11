@@ -1313,12 +1313,20 @@ def unlearn_recbole(
         forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
 
         # Handle case where all user interactions are sensitive (clean_forget_ds is empty)
+        # Check both before and after data_preparation, since filtering may occur during build()
         if len(clean_forget_ds) == 0:
             print(f"Note: All {len(cur_forget_ds)} interactions for user {u} are sensitive. Using empty clean_forget_data and more retain data instead.")
             # Set clean_forget_data to None since we can't create a dataloader from empty dataset
             clean_forget_data = None
         else:
-            clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            try:
+                clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            except ValueError as e:
+                if "num_samples should be a positive integer" in str(e):
+                    print(f"Note: All {len(cur_forget_ds)} interactions for user {u} became empty after filtering (likely due to nbr_phase). Using empty clean_forget_data and more retain data instead.")
+                    clean_forget_data = None
+                else:
+                    raise
 
         retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
 
