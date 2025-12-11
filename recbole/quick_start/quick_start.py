@@ -1045,15 +1045,45 @@ def unlearn_recbole(
 
         logger.info(f"Loaded {len(unlearning_user_ids)} user IDs for NBR unlearning")
 
-        # For NBR, we need to create a DataFrame with user_id and a dummy item_id
-        # since the unlearning logic expects pairs_by_user format
-        # However, for NBR we'll handle it differently - we'll create a dict mapping user_id to []
-        # to indicate we're unlearning all sensitive items for that user
-        # Create a DataFrame to maintain compatibility with existing code structure
-        unlearning_samples = pd.DataFrame({
-            'user_id': unlearning_user_ids,
-            'item_id': [[] for _ in unlearning_user_ids]  # Empty list for each user
-        })
+        # Load the sensitive items that need to be unlearned
+        if "sensitive_category" in config and config['sensitive_category'] is not None:
+            sensitive_category = config['sensitive_category']
+
+            # Try different naming conventions for sensitive items file
+            sensitive_items_file = os.path.join(
+                config["data_path"],
+                f"sensitive_asins_{sensitive_category}.txt"
+            )
+
+            if not os.path.exists(sensitive_items_file):
+                sensitive_items_file = os.path.join(
+                    config["data_path"],
+                    f"sensitive_products_{sensitive_category}.txt"
+                )
+
+            if not os.path.exists(sensitive_items_file):
+                raise FileNotFoundError(
+                    f"Sensitive items file not found for category '{sensitive_category}'. Tried:\n"
+                    f"  - sensitive_asins_{sensitive_category}.txt\n"
+                    f"  - sensitive_products_{sensitive_category}.txt"
+                )
+
+            logger.info(f"Loading sensitive items from: {sensitive_items_file}")
+            with open(sensitive_items_file, 'r') as f:
+                sensitive_items = [int(line.strip()) for line in f if line.strip()]
+
+            logger.info(f"Loaded {len(sensitive_items)} sensitive items for category '{sensitive_category}'")
+
+            # Create DataFrame with user_id and the list of sensitive items for each user
+            # Each user will unlearn the same set of sensitive items
+            unlearning_samples = pd.DataFrame({
+                'user_id': unlearning_user_ids,
+                'item_id': [sensitive_items for _ in unlearning_user_ids]
+            })
+        else:
+            raise ValueError(
+                "For NBR unlearning, 'sensitive_category' must be specified in config"
+            )
     else:
         raise ValueError(f"Unsupported task_type: {config.task_type}. Only 'SBR', 'CF', and 'NBR' are supported.")
 
@@ -1066,14 +1096,26 @@ def unlearn_recbole(
 
     print("created user and item ids")
 
-    
+
     rows_by_user = dict()
 
-    pairs_by_user = (
-        unlearning_samples.groupby("user_id")["item_id"]
-        .agg(list)
-        .to_dict()
-    )
+    # For NBR, the item_id column already contains lists, so we need to handle it differently
+    if config.task_type == "NBR":
+        # Create dict directly without aggregation to avoid nested lists
+        # Each row already has a list of items
+        pairs_by_user = {}
+        for _, row in unlearning_samples.iterrows():
+            user_id = row['user_id']
+            item_list = row['item_id']
+            # item_list is already a list, so use it directly
+            pairs_by_user[user_id] = item_list
+    else:
+        # For SBR/CF, use the original aggregation approach
+        pairs_by_user = (
+            unlearning_samples.groupby("user_id")["item_id"]
+            .agg(list)
+            .to_dict()
+        )
 
     # model loading and initialization
 
