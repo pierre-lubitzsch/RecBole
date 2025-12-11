@@ -462,10 +462,10 @@ class NextBasketDataset(Dataset):
         history_tensor = self.inter_feat[self.history_items_field]
         new_shape = (-1, self.max_history_baskets, self.max_basket_items)
         self.inter_feat[self.history_items_field] = history_tensor.view(new_shape)
-        self.field2seqlen[self.history_items_field] = (
-            self.max_history_baskets,
-            self.max_basket_items,
-        )
+        # Note: We do NOT update field2seqlen here. It must remain as the flattened
+        # length (max_history_baskets * max_basket_items) for compatibility with
+        # _dataframe_to_interaction() which uses it for slicing when creating
+        # forget datasets during unlearning.
 
     def build(self):
         """Return (train, valid, test) datasets using fixed temporal phases."""
