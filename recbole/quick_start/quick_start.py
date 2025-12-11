@@ -1070,9 +1070,31 @@ def unlearn_recbole(
 
             logger.info(f"Loading sensitive items from: {sensitive_items_file}")
             with open(sensitive_items_file, 'r') as f:
-                sensitive_items = [int(line.strip()) for line in f if line.strip()]
+                sensitive_items_raw = [int(line.strip()) for line in f if line.strip()]
 
-            logger.info(f"Loaded {len(sensitive_items)} sensitive items for category '{sensitive_category}'")
+            logger.info(f"Loaded {len(sensitive_items_raw)} raw sensitive items for category '{sensitive_category}'")
+
+            # Filter sensitive items to only include those that exist in the dataset
+            # The dataset may have filtered out some items due to minimum interaction thresholds
+            sensitive_items = []
+            for item in sensitive_items_raw:
+                try:
+                    # Check if this item exists in the dataset by trying to get its token
+                    item_token = str(item)
+                    # Verify it exists in the dataset's item vocabulary
+                    if item_token in dataset.field2id_token[dataset.iid_field]:
+                        sensitive_items.append(item)
+                except (ValueError, KeyError):
+                    # Item doesn't exist in dataset, skip it
+                    pass
+
+            logger.info(f"Filtered to {len(sensitive_items)} sensitive items that exist in the dataset (removed {len(sensitive_items_raw) - len(sensitive_items)} items)")
+
+            if len(sensitive_items) == 0:
+                raise ValueError(
+                    f"No sensitive items from category '{sensitive_category}' exist in the dataset. "
+                    f"This could mean all sensitive items were filtered out during preprocessing."
+                )
 
             # Create DataFrame with user_id and the list of sensitive items for each user
             # Each user will unlearn the same set of sensitive items
