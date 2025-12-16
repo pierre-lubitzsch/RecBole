@@ -1866,15 +1866,27 @@ def unlearn_recbole(
 
     print("Original Model:")
     print(f"Evaluating model {base_model_path} on data with current mask\n")
-    test_result = trainer.evaluate(
-        test_data, load_best_model=True, show_progress=False, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
-    )
-    if spam:
-        test_result, probability_data = test_result
-    print(test_result)
+    if not os.path.exists(base_model_path):
+        print(f"Warning: Base model file not found: {base_model_path}, skipping evaluation")
+        test_result = None
+    else:
+        test_result = trainer.evaluate(
+            test_data, load_best_model=True, show_progress=False, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
+        )
+        if test_result is None:
+            print(f"Warning: Failed to evaluate base model {base_model_path}")
+        elif spam:
+            test_result, probability_data = test_result
+    if test_result is not None:
+        print(test_result)
 
     # First loop: evaluate each model on its corresponding masked data
     for i, (file, mask) in enumerate(zip(eval_files, eval_masks)):
+        # Skip if checkpoint file doesn't exist
+        if not os.path.exists(file):
+            print(f"Skipping evaluation for {file} - checkpoint file not found")
+            continue
+            
         print(f"Evaluating model {file} on data with current mask\n")
         
         model_interaction_probabilities[file] = []
@@ -1894,6 +1906,9 @@ def unlearn_recbole(
         test_result = trainer.evaluate(
             cur_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
         )
+        if test_result is None:
+            print(f"Skipping results for {file} - evaluation failed (checkpoint not found)")
+            continue
         if spam:
             test_result, probability_data = test_result
             model_interaction_probabilities[file] = probability_data
@@ -1927,6 +1942,11 @@ def unlearn_recbole(
 
         # Second loop: evaluate all models on the same unpoisoned data
         for file in eval_files:
+            # Skip if checkpoint file doesn't exist
+            if not os.path.exists(file):
+                print(f"Skipping evaluation for {file} on unpoisoned data - checkpoint file not found")
+                continue
+                
             print(f"Evaluating model {file} on unpoisoned data\n")
 
             unpoisoned_key = f"{file}_unpoisoned"
@@ -1937,6 +1957,9 @@ def unlearn_recbole(
             unpoisoned_test_result = trainer.evaluate(
                 unpoisoned_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
             )
+            if unpoisoned_test_result is None:
+                print(f"Skipping results for {file} on unpoisoned data - evaluation failed (checkpoint not found)")
+                continue
             if spam:
                 unpoisoned_test_result, probability_data = unpoisoned_test_result
                 model_interaction_probabilities[unpoisoned_key] = probability_data
@@ -2123,6 +2146,7 @@ def unlearn_recbole(
             sensitive_category = config['sensitive_category']
             
             # Initialize evaluator
+            # Use the unlearning algorithm being evaluated to select matching Qh models
             evaluator = RULIPrivacyEvaluator(
                 config=config,
                 dataset=dataset,
@@ -2132,6 +2156,7 @@ def unlearn_recbole(
                 k=config.get("ruli_privacy_k", 8),
                 beta_threshold=config.get("ruli_privacy_beta_threshold", 0.5),
                 n_population_samples=config.get("ruli_privacy_n_population_samples", 2500),
+                unlearning_algorithm=config.get("ruli_privacy_unlearning_algorithm") or unlearning_algorithm,
             )
             
             # Load forget set if available

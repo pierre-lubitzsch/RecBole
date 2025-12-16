@@ -3029,7 +3029,8 @@ class Trainer(AbstractTrainer):
                 break
             interaction = interaction.to(self.device)
             # filter out forgotten users from the original data we use here
-            mask = ~torch.isin(interaction["user_id"], torch.tensor(unlearned_users_before, device=self.device))
+            uid_field = retain_train_data.dataset.uid_field
+            mask = ~torch.isin(interaction[uid_field], torch.tensor(unlearned_users_before, device=self.device))
             interaction = interaction[mask]
             interaction = interaction[:retain_count]
             cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
@@ -3444,8 +3445,9 @@ class Trainer(AbstractTrainer):
 
                 # Filter out users that have been unlearned
                 if unlearned_users_before:
+                    uid_field = retain_train_data.dataset.uid_field
                     mask = ~torch.isin(
-                        interaction["user_id"],
+                        interaction[uid_field],
                         torch.tensor(unlearned_users_before, device=self.device)
                     )
                     interaction = interaction[mask]
@@ -3870,6 +3872,10 @@ class Trainer(AbstractTrainer):
 
         if load_best_model:
             checkpoint_file = model_file or self.saved_model_file
+            if not os.path.exists(checkpoint_file):
+                error_msg = f"Checkpoint file not found: {checkpoint_file}"
+                self.logger.warning(error_msg)
+                return None  # Return None to indicate the file doesn't exist
             checkpoint = torch.load(checkpoint_file, map_location=self.device)
             self.model.load_state_dict(checkpoint["state_dict"])
             self.model.load_other_parameter(checkpoint.get("other_parameter"))

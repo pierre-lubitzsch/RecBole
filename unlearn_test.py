@@ -404,6 +404,13 @@ def main():
         default=None,
         help="Random seed for D_target construction (optional, uses config seed if not specified)"
     )
+    parser.add_argument(
+        "--ruli_privacy_unlearning_algorithm",
+        type=str,
+        default=None,
+        choices=["scif", "kookmin", "fanchuan", "gif", "ceu", "idea", "seif"],
+        help="Unlearning algorithm to use for Qh shadow models (if multiple available, defaults to first available or matches --unlearning_algorithm)"
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -472,6 +479,7 @@ def main():
         "ruli_privacy_shadow_models_dir": args.ruli_privacy_shadow_models_dir,
         "ruli_privacy_k": args.ruli_privacy_k,
         "ruli_privacy_d_target_seed": args.ruli_privacy_d_target_seed if args.ruli_privacy_d_target_seed is not None else args.seed,
+        "ruli_privacy_unlearning_algorithm": args.ruli_privacy_unlearning_algorithm,
     }
     if args.gif_retain_samples is not None:
         config_dict["gif_retain_samples"] = args.gif_retain_samples
