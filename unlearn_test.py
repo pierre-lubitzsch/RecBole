@@ -368,6 +368,43 @@ def main():
         help="Directory where the models are saved"
     )
 
+    # RULI Privacy evaluation configuration
+    parser.add_argument(
+        "--ruli_privacy_evaluation",
+        action="store_true",
+        help="Enable RULI Privacy (Game 2) MIA evaluation"
+    )
+    parser.add_argument(
+        "--ruli_privacy_beta_threshold",
+        type=float,
+        default=0.5,
+        help="Decision threshold for membership inference (default: 0.5)"
+    )
+    parser.add_argument(
+        "--ruli_privacy_n_population_samples",
+        type=int,
+        default=2500,
+        help="Number of population samples for comparison (default: 2500)"
+    )
+    parser.add_argument(
+        "--ruli_privacy_shadow_models_dir",
+        type=str,
+        default=None,
+        help="Directory where shadow models are stored (optional, uses default if not specified)"
+    )
+    parser.add_argument(
+        "--ruli_privacy_k",
+        type=int,
+        default=8,
+        help="Number of shadow models to use (default: 8, must match shadow model computation)"
+    )
+    parser.add_argument(
+        "--ruli_privacy_d_target_seed",
+        type=int,
+        default=None,
+        help="Random seed for D_target construction (optional, uses config seed if not specified)"
+    )
+
     args, _ = parser.parse_known_args()
 
     if args.seed is not None:
@@ -429,6 +466,12 @@ def main():
         "seif_learning_rate": args.seif_learning_rate,
         "seif_momentum": args.seif_momentum,
         "seif_weight_decay": args.seif_weight_decay,
+        "ruli_privacy_evaluation": args.ruli_privacy_evaluation,
+        "ruli_privacy_beta_threshold": args.ruli_privacy_beta_threshold,
+        "ruli_privacy_n_population_samples": args.ruli_privacy_n_population_samples,
+        "ruli_privacy_shadow_models_dir": args.ruli_privacy_shadow_models_dir,
+        "ruli_privacy_k": args.ruli_privacy_k,
+        "ruli_privacy_d_target_seed": args.ruli_privacy_d_target_seed if args.ruli_privacy_d_target_seed is not None else args.seed,
     }
     if args.gif_retain_samples is not None:
         config_dict["gif_retain_samples"] = args.gif_retain_samples

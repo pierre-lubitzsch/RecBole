@@ -2111,6 +2111,184 @@ def unlearn_recbole(
         else:
             print(f"Warning: Sensitive items file not found at {sensitive_items_path}")
 
+    # RULI Privacy (Game 2) MIA Evaluation
+    if config.get("ruli_privacy_evaluation", False) and config.get("sensitive_category") is not None:
+        print("\n" + "="*60)
+        print("RULI Privacy (Game 2) MIA Evaluation")
+        print("="*60)
+        
+        try:
+            from recbole.quick_start.ruli_privacy_evaluator import RULIPrivacyEvaluator
+            
+            sensitive_category = config['sensitive_category']
+            
+            # Initialize evaluator
+            evaluator = RULIPrivacyEvaluator(
+                config=config,
+                dataset=dataset,
+                train_data=train_data,
+                test_data=test_data,
+                shadow_models_dir=config.get("ruli_privacy_shadow_models_dir"),
+                k=config.get("ruli_privacy_k", 8),
+                beta_threshold=config.get("ruli_privacy_beta_threshold", 0.5),
+                n_population_samples=config.get("ruli_privacy_n_population_samples", 2500),
+            )
+            
+            # Load forget set if available
+            forget_set_df = None
+            if 'unlearning_samples' in locals() and unlearning_samples is not None:
+                forget_set_df = unlearning_samples
+            else:
+                # Try to load forget set from file
+                try:
+                    unlearning_samples_path = os.path.join(
+                        config["data_path"],
+                        f"{config['dataset']}_unlearn_pairs_sensitive_category_{sensitive_category}"
+                        f"_seed_{config.get('unlearn_sample_selection_seed', config.get('seed'))}"
+                        f"_unlearning_fraction_{float(config.get('unlearning_fraction', 0.0001))}.inter"
+                    )
+                    if os.path.exists(unlearning_samples_path):
+                        if config.task_type == "CF":
+                            forget_set_df = pd.read_csv(
+                                unlearning_samples_path,
+                                sep="\t",
+                                names=["user_id", "item_id", "rating", "timestamp"],
+                                header=0,
+                            )
+                        elif config.task_type == "SBR":
+                            with open(unlearning_samples_path, 'r') as f:
+                                header_line = f.readline().strip()
+                            column_names = [col.split(':')[0] for col in header_line.split('\t')]
+                            forget_set_df = pd.read_csv(
+                                unlearning_samples_path,
+                                sep="\t",
+                                names=column_names,
+                                header=0,
+                            )
+                except Exception as e:
+                    logger.warning(f"Could not load forget set: {e}")
+            
+            # Construct D_target
+            d_target_seed = config.get("ruli_privacy_d_target_seed", config.get("seed"))
+            d_target, overlap_flags = evaluator.construct_d_target(
+                sensitive_category=sensitive_category,
+                forget_set=forget_set_df,
+                seed=d_target_seed,
+            )
+            
+            print(f"Constructed D_target with {len(d_target)} samples")
+            print(f"  - {sum(overlap_flags)} samples overlap with forget set (will be skipped)")
+            print(f"  - {len(d_target) - sum(overlap_flags)} samples not in forget set")
+            
+            # Find retrained model path
+            # For unlearning evaluation, we need a retrained baseline model
+            # This should be trained separately without the forget set
+            retrained_model_path = None
+            
+            # Try to find retrained model - check multiple possible locations
+            possible_paths = [
+                # Standard retrained model path
+                os.path.join(
+                    config.get("model_dir", "./saved"),
+                    f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_retrained_best.pth"
+                ),
+                # Alternative location
+                os.path.join(
+                    "./saved",
+                    f"model_{config['model']}_seed_{config['seed']}_dataset_{config['dataset']}_retrained_best.pth"
+                ),
+                # If retrain_flag is set, the current model might be the retrained one
+                base_model_path if config.get("retrain_flag") else None,
+            ]
+            
+            for path in possible_paths:
+                if path and os.path.exists(path):
+                    retrained_model_path = path
+                    break
+            
+            # Evaluate each unlearned model checkpoint
+            # In eval_only mode, eval_files should still be defined (from before the unlearning loop)
+            if 'eval_files' not in locals() or not eval_files:
+                print("Warning: No unlearned model checkpoints found. Skipping RULI Privacy evaluation.")
+                print("  Make sure unlearned model checkpoints exist, or run without --eval_only first.")
+            else:
+                for checkpoint_idx, unlearned_model_file in enumerate(eval_files):
+                    print(f"\nEvaluating checkpoint {checkpoint_idx} (model: {unlearned_model_file})")
+                    
+                    # Check if file exists
+                    if not os.path.exists(unlearned_model_file):
+                        print(f"  Warning: Unlearned model file not found: {unlearned_model_file}")
+                        print(f"  Skipping this checkpoint")
+                        continue
+                    
+                    # Load unlearned model
+                    unlearned_checkpoint = torch.load(unlearned_model_file, map_location=trainer.device)
+                    trainer.model.load_state_dict(unlearned_checkpoint['state_dict'])
+                    trainer.model.load_other_parameter(unlearned_checkpoint.get('other_parameter'))
+                    trainer.model.eval()
+                    unlearned_model = trainer.model
+                    
+                    # Load retrained model (baseline)
+                    if retrained_model_path and os.path.exists(retrained_model_path):
+                        retrained_checkpoint = torch.load(retrained_model_path, map_location=trainer.device)
+                        # Create a copy of the model for retrained baseline
+                        retrained_model = get_model(config["model"])(config, train_data._dataset).to(config["device"])
+                        retrained_model.load_state_dict(retrained_checkpoint['state_dict'])
+                        retrained_model.load_other_parameter(retrained_checkpoint.get('other_parameter'))
+                        retrained_model.eval()
+                    else:
+                        print(f"  Warning: Retrained model not found at {retrained_model_path}")
+                        print(f"  Skipping RULI Privacy evaluation for this checkpoint")
+                        continue
+                    
+                    # Run evaluation
+                    eval_results, summary = evaluator.evaluate_unlearning(
+                        unlearned_model=unlearned_model,
+                        retrained_model=retrained_model,
+                        d_target=d_target,
+                        overlap_flags=overlap_flags,
+                    )
+                    
+                    # Print summary
+                    print(f"\n  RULI Privacy Evaluation Results:")
+                    print(f"    Samples evaluated: {summary['n_samples_evaluated']}")
+                    print(f"    Samples in forget set (skipped): {summary['n_samples_in_forget_set']}")
+                    print(f"\n    Unlearned Model:")
+                    print(f"      Mean MIA Score: {summary['unlearned_model']['mean_mia_score']:.4f}")
+                    print(f"      Detection Rate: {summary['unlearned_model']['detection_rate']:.4f}")
+                    print(f"\n    Retrained Model (Baseline):")
+                    print(f"      Mean MIA Score: {summary['retrained_model']['mean_mia_score']:.4f}")
+                    print(f"      Detection Rate: {summary['retrained_model']['detection_rate']:.4f}")
+                    print(f"\n    Comparison:")
+                    print(f"      Score Difference: {summary['comparison']['score_difference']:.4f}")
+                    print(f"      Detection Rate Difference: {summary['comparison']['detection_rate_difference']:.4f}")
+                    
+                    # Store results
+                    results.append({
+                        "model_file": unlearned_model_file,
+                        "checkpoint_idx": checkpoint_idx,
+                        "evaluation_type": "ruli_privacy",
+                        "sensitive_category": sensitive_category,
+                        "summary": summary,
+                        "detailed_results": eval_results,
+                    })
+                    
+                    # Clean up
+                    del retrained_model
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+            
+            print("\n" + "="*60)
+            print("RULI Privacy Evaluation Complete")
+            print("="*60)
+            
+        except ImportError as e:
+            print(f"Warning: Could not import RULI Privacy Evaluator: {e}")
+        except Exception as e:
+            print(f"Error during RULI Privacy evaluation: {e}")
+            import traceback
+            traceback.print_exc()
+
     return results
 
 def run_recboles(rank, *args):
@@ -2185,8 +2363,6 @@ def load_data_and_model(model_file):
             - valid_data (AbstractDataLoader): The dataloader for validation.
             - test_data (AbstractDataLoader): The dataloader for testing.
     """
-    import torch
-
     checkpoint = torch.load(model_file)
     config = checkpoint["config"]
     init_seed(config["seed"], config["reproducibility"])
