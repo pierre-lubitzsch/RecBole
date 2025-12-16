@@ -288,12 +288,10 @@ def run_recbole(
             unlearning_user_ids = None
             if os.path.exists(unlearning_users_path_pkl):
                 logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_pkl}")
-                import pickle
                 with open(unlearning_users_path_pkl, 'rb') as f:
                     unlearning_user_ids = pickle.load(f)
             elif os.path.exists(unlearning_users_path_json):
                 logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_json}")
-                import json
                 with open(unlearning_users_path_json, 'r') as f:
                     unlearning_user_ids = json.load(f)
             else:
@@ -357,7 +355,6 @@ def run_recbole(
                 )
 
                 logger.info(f"Loading original merged data from: {original_merged_path}")
-                import json
                 with open(original_merged_path, 'r') as f:
                     merged_data = json.load(f)
 
@@ -720,8 +717,11 @@ def run_recbole(
                         header=0,
                     )
 
+                # Use uid_field and iid_field from original_dataset to handle SBR (session_id) vs CF (user_id)
+                uid_field_eval = original_dataset.uid_field
+                iid_field_eval = original_dataset.iid_field
                 pairs_by_user = (
-                    unlearning_samples_for_eval.groupby("user_id")["item_id"]
+                    unlearning_samples_for_eval.groupby(uid_field_eval)[iid_field_eval]
                     .agg(list)
                     .to_dict()
                 )
@@ -932,6 +932,7 @@ def unlearn_recbole(
     seif_learning_rate=0.0007,
     seif_momentum=0.9,
     seif_weight_decay=5e-4,
+    unlearning_batchsize=1,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -975,19 +976,54 @@ def unlearn_recbole(
     removed_mask = np.zeros(len(orig_inter_df), dtype=bool)
     logger.info(dataset)
 
+    # Get field names for later use
+    uid_field, iid_field = dataset.uid_field, dataset.iid_field
+
     target_items = None
     if spam:
+        # Try new naming convention first (bandwagon_unpopular_ratio)
         unlearning_samples_path = os.path.join(
             config["data_path"],
-            f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+            f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
         )
+        
+        # Fall back to legacy naming if new file doesn't exist
+        if not os.path.exists(unlearning_samples_path):
+            unlearning_samples_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+            )
+            logger.info(f"Using legacy spam sessions file path: {unlearning_samples_path}")
+        
+        # Try new naming convention for metadata first
         unlearning_samples_metadata_path = os.path.join(
             config["data_path"],
-            f"spam_metadata_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.json"
+            f"{config['dataset']}_fraud_metadata_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.json"
         )
+        
+        # Fall back to legacy naming if new file doesn't exist
+        if not os.path.exists(unlearning_samples_metadata_path):
+            unlearning_samples_metadata_path = os.path.join(
+                config["data_path"],
+                f"spam_metadata_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.json"
+            )
+            logger.info(f"Using legacy spam metadata file path: {unlearning_samples_metadata_path}")
+        
         with open(unlearning_samples_metadata_path, "r") as f:
             metadata = json.load(f)
-            target_items = np.array(list(map(int, metadata["target_items"])), dtype=np.int64)
+            # Convert target items from original tokens to internal IDs
+            target_items_tokens = list(map(int, metadata["target_items"]))
+            target_items = []
+            for item_token in target_items_tokens:
+                try:
+                    # Convert token to internal ID using dataset's mapping
+                    item_id = dataset.token2id(iid_field, str(item_token))
+                    target_items.append(item_id)
+                except (ValueError, KeyError):
+                    # Item not in dataset (shouldn't happen for spam items, but handle gracefully)
+                    logger.warning(f"Target item token {item_token} not found in dataset, skipping")
+                    continue
+            target_items = np.array(target_items, dtype=np.int64)
     else:
         unlearning_samples_path = os.path.join(
             config["data_path"],
@@ -1027,12 +1063,10 @@ def unlearn_recbole(
         unlearning_user_ids = None
         if os.path.exists(unlearning_users_path_pkl):
             logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_pkl}")
-            import pickle
             with open(unlearning_users_path_pkl, 'rb') as f:
                 unlearning_user_ids = pickle.load(f)
         elif os.path.exists(unlearning_users_path_json):
             logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_json}")
-            import json
             with open(unlearning_users_path_json, 'r') as f:
                 unlearning_user_ids = json.load(f)
         else:
@@ -1111,8 +1145,6 @@ def unlearn_recbole(
 
     print("loaded unlearning samples")
 
-    uid_field, iid_field = dataset.uid_field, dataset.iid_field
-
     user_ids = dataset.inter_feat[uid_field].to_numpy()
     item_ids = dataset.inter_feat[iid_field].to_numpy()
 
@@ -1127,14 +1159,15 @@ def unlearn_recbole(
         # Each row already has a list of items
         pairs_by_user = {}
         for _, row in unlearning_samples.iterrows():
-            user_id = row['user_id']
+            user_id = row[uid_field]
             item_list = row['item_id']
             # item_list is already a list, so use it directly
             pairs_by_user[user_id] = item_list
     else:
         # For SBR/CF, use the original aggregation approach
+        # Use uid_field (e.g., "session_id" for SBR, "user_id" for CF) instead of hardcoding
         pairs_by_user = (
-            unlearning_samples.groupby("user_id")["item_id"]
+            unlearning_samples.groupby(uid_field)[iid_field]
             .agg(list)
             .to_dict()
         )
@@ -1195,11 +1228,11 @@ def unlearn_recbole(
     total_unlearn_requests = len(pairs_by_user)
     
     # Get all unique users from orig_inter_df
-    unique_users = orig_inter_df['user_id'].unique()
+    unique_users = orig_inter_df[uid_field].unique()
     user_pool = unique_users.tolist()
     
     # Create a mapping of user to their session indices
-    user_to_indices = orig_inter_df.groupby('user_id').indices
+    user_to_indices = orig_inter_df.groupby(uid_field).indices
     
     # Create an oversized pool to account for filtering needs
     pool_size_multiplier = 3  # Make pool 3x larger to ensure we have enough replacements
@@ -1261,8 +1294,20 @@ def unlearn_recbole(
     
     # Now in the unlearning loop:
     unlearned_users_before = []
-    unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
-    eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
+    
+    # Get batch size from config or parameter (default: 1 for sequential processing)
+    batch_size = config.get("unlearning_batchsize", unlearning_batchsize)
+    total_users = len(pairs_by_user)
+    
+    # Calculate checkpoints based on number of batches
+    if batch_size > 1:
+        total_batches = (total_users + batch_size - 1) // batch_size  # Ceiling division
+        unlearning_checkpoints = [total_batches // 4, total_batches // 2, 3 * total_batches // 4, total_batches - 1]
+        eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
+    else:
+        unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
+        eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
+    
     eval_masks = []
     # Track which users were unlearned at each checkpoint for sensitive item evaluation
     unlearned_users_at_checkpoint = {}
@@ -1271,254 +1316,533 @@ def unlearn_recbole(
     total_start_time = time.time()
     uid_seen = set()
     
-    for unlearn_request_idx, (u, forget_items) in enumerate(sorted(pairs_by_user.items())):
-        print(f"\nUnlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
-        request_start_time = time.time()
-
-        # Convert user and item tokens to internal IDs
-        # Convert to string first in case pandas read them as integers
-        u_id = dataset.token2id(uid_field, str(u))
-        if u_id in uid_seen:
-            print(f"Warning: user {u} (internal ID {u_id}) has already been unlearned before.")
-            continue
-        uid_seen.add(u_id)
-        forget_items_ids = [dataset.token2id(iid_field, str(item)) for item in forget_items]
-
-        unlearned_users_before.append(u_id)
-
-        rows_by_user[u_id] = np.where(user_ids == u_id)[0]
-        all_idx = rows_by_user[u_id]
-        mask = np.isin(item_ids[all_idx], forget_items_ids)
-        removed_mask[all_idx[mask]] = True
-
-        saved_checkpoint = unlearn_request_idx in unlearning_checkpoints
-
-        if saved_checkpoint:
-            eval_mask = removed_mask.copy()
-            eval_masks.append(eval_mask)
-
-        if "eval_only" in config and config["eval_only"]:
-            continue
-
-        cur_forget_ds = dataset.copy(
-            orig_inter_df.iloc[all_idx]
-        )
-
-        print(f"Unlearning {len(cur_forget_ds)} interactions")
-
-        clean_forget_ds = dataset.copy(
-            orig_inter_df.iloc[all_idx[~mask]]
-        )
-
-        forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
-
-        # Handle case where all user interactions are sensitive (clean_forget_ds is empty)
-        # Check both before and after data_preparation, since filtering may occur during build()
-        if len(clean_forget_ds) == 0:
-            print(f"Note: All {len(cur_forget_ds)} interactions for user {u} are sensitive. Using empty clean_forget_data and more retain data instead.")
-            # Set clean_forget_data to None since we can't create a dataloader from empty dataset
-            clean_forget_data = None
-        else:
-            try:
-                clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
-            except ValueError as e:
-                if "num_samples should be a positive integer" in str(e):
-                    print(f"Note: All {len(cur_forget_ds)} interactions for user {u} became empty after filtering (likely due to nbr_phase). Using empty clean_forget_data and more retain data instead.")
+    # Convert pairs_by_user to a list for batching
+    sorted_pairs = sorted(pairs_by_user.items())
+    
+    # Process in batches if batch_size > 1, otherwise process one by one
+    if batch_size > 1:
+        # Process in batches
+        for batch_idx in range(0, len(sorted_pairs), batch_size):
+            batch = sorted_pairs[batch_idx:batch_idx + batch_size]
+            current_batch_size = len(batch)
+            unlearn_request_idx = batch_idx // batch_size  # Batch index
+            
+            print(f"\nUnlearning batch {unlearn_request_idx + 1}/{(len(sorted_pairs) + batch_size - 1) // batch_size} with {current_batch_size} users\n")
+            request_start_time = time.time()
+            
+            # Collect all forget items from all users in the batch
+            batch_user_ids = []
+            batch_forget_indices = []
+            batch_clean_forget_indices = []
+            
+            for u, forget_items in batch:
+                # Convert user and item tokens to internal IDs
+                u_id = dataset.token2id(uid_field, str(u))
+                if u_id in uid_seen:
+                    print(f"Warning: user {u} (internal ID {u_id}) has already been unlearned before.")
+                    continue
+                uid_seen.add(u_id)
+                forget_items_ids = [dataset.token2id(iid_field, str(item)) for item in forget_items]
+                
+                unlearned_users_before.append(u_id)
+                batch_user_ids.append(u_id)
+                
+                rows_by_user[u_id] = np.where(user_ids == u_id)[0]
+                all_idx = rows_by_user[u_id]
+                mask = np.isin(item_ids[all_idx], forget_items_ids)
+                removed_mask[all_idx[mask]] = True
+                
+                # Collect indices for forget and clean forget datasets
+                batch_forget_indices.extend(all_idx.tolist())
+                batch_clean_forget_indices.extend(all_idx[~mask].tolist())
+            
+            saved_checkpoint = unlearn_request_idx in unlearning_checkpoints
+            
+            if saved_checkpoint:
+                eval_mask = removed_mask.copy()
+                eval_masks.append(eval_mask)
+            
+            if "eval_only" in config and config["eval_only"]:
+                continue
+            
+            # Create combined forget dataset for the batch
+            if len(batch_forget_indices) == 0:
+                print(f"Warning: Batch {unlearn_request_idx + 1} has no forget interactions, skipping.")
+                continue
+                
+            cur_forget_ds = dataset.copy(
+                orig_inter_df.iloc[batch_forget_indices]
+            )
+            
+            print(f"Unlearning {len(cur_forget_ds)} interactions from {len(batch_user_ids)} users")
+            
+            # For spam unlearning: skip clean_forget_data (no replacement samples), use only retain_data
+            if spam:
+                print(f"Note: Spam unlearning - skipping clean_forget_data (no replacement samples), using only retain_data")
+                clean_forget_data = None
+            else:
+                # Create clean forget dataset (interactions that should remain)
+                if len(batch_clean_forget_indices) == 0:
+                    clean_forget_ds = None
                     clean_forget_data = None
+                    print(f"Note: All interactions in batch are sensitive. Using empty clean_forget_data and more retain data instead.")
                 else:
-                    raise
-
-        retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
-
-        avg_session_length = len(orig_inter_df) / len(unique_users)
-
-        if unlearning_algorithm == "scif":
-            retain_batch_size = 16
-            samples_wanted_constant = 1024
-            retain_samples_used = 128
+                    clean_forget_ds = dataset.copy(
+                        orig_inter_df.iloc[batch_clean_forget_indices]
+                    )
+                    try:
+                        clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+                    except ValueError as e:
+                        if "num_samples should be a positive integer" in str(e):
+                            print(f"Note: All interactions in batch became empty after filtering. Using empty clean_forget_data and more retain data instead.")
+                            clean_forget_data = None
+                        else:
+                            raise
+            
+            # Always create forget_data (spam data to unlearn)
+            forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            
+            retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
+            
             forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
             
-            total_samples_needed = max(
-                retain_samples_used * forget_size,
-                samples_wanted_constant * forget_size
+            if unlearning_algorithm == "scif":
+                retain_batch_size = 16
+                samples_wanted_constant = 1024
+                retain_samples_used = 128
+                
+                total_samples_needed = max(
+                    retain_samples_used * forget_size,
+                    samples_wanted_constant * forget_size
+                )
+                
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+                
+            elif unlearning_algorithm == "kookmin":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                
+                neg_grad_retain_sample_size = 128 * forget_size
+                retain_samples_used_for_update = 32 * forget_size
+                
+                total_samples_needed = max(
+                    neg_grad_retain_sample_size,
+                    retain_samples_used_for_update
+                )
+                
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+                
+            elif unlearning_algorithm == "fanchuan":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                
+                retain_samples_used_for_update = 32 * forget_size
+                unlearn_iters_contrastive = 8
+                
+                total_samples_needed = retain_samples_used_for_update * unlearn_iters_contrastive
+                
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+                
+            elif unlearning_algorithm == "gif":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                
+                # GIF: similar to kookmin approach
+                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 128 * forget_size
+                hessian_sample_size = 1024
+                
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    hessian_sample_size
+                )
+                
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+                
+            elif unlearning_algorithm == "ceu":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                
+                # CEU: needs samples for Hessian computation and influence estimation
+                ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
+                retain_samples_used_for_update = 128 * forget_size
+                
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    ceu_hessian_samples
+                )
+                
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+                
+            elif unlearning_algorithm == "idea":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                
+                # IDEA: needs samples for Hessian computation and gradient estimation
+                idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
+                retain_samples_used_for_update = 128 * forget_size
+                
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    idea_hessian_samples
+                )
+                
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+                
+            elif unlearning_algorithm == "seif":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                
+                # SEIF: needs samples for repair phase fine-tuning
+                # Use similar amount as other methods - enough for multiple epochs
+                seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
+                retain_samples_used_for_update = 128 * forget_size * seif_repair_epochs
+                
+                total_samples_needed = retain_samples_used_for_update
+                
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+            
+            # Get complete sessions
+            retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
+                total_samples_needed,  # Pass total interactions needed, not sessions
+                unlearned_users_before,
+                user_sample_pool,
+                pool_cursor,
+                user_to_indices,
+            )
+            
+            print(f"Selected {len(retain_users)} user sessions with {len(retain_indices)} total interactions")
+            
+            # Create dataset from selected indices
+            current_retain_data = orig_inter_df.iloc[retain_indices]
+            current_retain_ds = dataset.copy(current_retain_data)
+            
+            # Temporarily modify batch size for this retain loader
+            tmp = config["train_batch_size"]
+            config["train_batch_size"] = retain_batch_size
+            current_retain_loader = data_preparation(config, current_retain_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            config["train_batch_size"] = tmp
+            
+            # model training
+            trainer.unlearn(
+                unlearn_request_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data=current_retain_loader,
+                retain_valid_data=None,#valid_data,
+                retain_test_data=None,#test_data,
+                unlearning_algorithm=unlearning_algorithm,
+                saved=saved_checkpoint,
+                show_progress=False,  # no progress bar during unlearning as it is short either way
+                max_norm=max_norm,
+                unlearned_users_before=unlearned_users_before,
+                kookmin_init_rate=kookmin_init_rate,
+                retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
+                task_type=config.task_type,
+                damping=damping,
+                gif_damping=gif_damping,
+                gif_scale_factor=gif_scale_factor,
+                gif_iterations=gif_iterations,
+                gif_k_hops=gif_k_hops,
+                gif_use_true_khop=gif_use_true_khop,
+                gif_retain_samples=gif_retain_samples,
+                ceu_lambda=ceu_lambda,
+                ceu_sigma=ceu_sigma,
+                ceu_epsilon=ceu_epsilon,
+                ceu_cg_iterations=ceu_cg_iterations,
+                ceu_hessian_samples=ceu_hessian_samples,
+                idea_damping=idea_damping,
+                idea_sigma=idea_sigma,
+                idea_epsilon=idea_epsilon,
+                idea_delta=idea_delta,
+                idea_iterations=idea_iterations,
+                idea_hessian_samples=idea_hessian_samples,
+                seif_erase_std=seif_erase_std,
+                seif_erase_std_final=seif_erase_std_final,
+                seif_repair_epochs=seif_repair_epochs,
+                seif_forget_class_weight=seif_forget_class_weight,
+                seif_learning_rate=seif_learning_rate,
+                seif_momentum=seif_momentum,
+                seif_weight_decay=seif_weight_decay,
+                original_dataset=dataset,
+            )
+            
+            request_end_time = time.time()
+            request_time = request_end_time - request_start_time
+            unlearning_times.append(request_time)
+            
+            print(f"\n\nBatch {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
+            
+            if saved_checkpoint:
+                # Store which users have been unlearned at this checkpoint
+                checkpoint_idx = retrain_checkpoint_idx_to_match
+                unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
+                
+                retrain_checkpoint_idx_to_match += 1
+                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
+            
+            sys.stdout.flush()
+            gc.collect()
+    else:
+        # Original sequential processing when batch_size == 1
+        for unlearn_request_idx, (u, forget_items) in enumerate(sorted_pairs):
+            print(f"\nUnlearning request {unlearn_request_idx + 1}/{len(pairs_by_user)} for user {u}\n")
+            request_start_time = time.time()
+
+            # Convert user and item tokens to internal IDs
+            # Convert to string first in case pandas read them as integers
+            u_id = dataset.token2id(uid_field, str(u))
+            if u_id in uid_seen:
+                print(f"Warning: user {u} (internal ID {u_id}) has already been unlearned before.")
+                continue
+            uid_seen.add(u_id)
+            forget_items_ids = [dataset.token2id(iid_field, str(item)) for item in forget_items]
+
+            unlearned_users_before.append(u_id)
+
+            rows_by_user[u_id] = np.where(user_ids == u_id)[0]
+            all_idx = rows_by_user[u_id]
+            mask = np.isin(item_ids[all_idx], forget_items_ids)
+            removed_mask[all_idx[mask]] = True
+
+            saved_checkpoint = unlearn_request_idx in unlearning_checkpoints
+
+            if saved_checkpoint:
+                eval_mask = removed_mask.copy()
+                eval_masks.append(eval_mask)
+
+            if "eval_only" in config and config["eval_only"]:
+                continue
+
+            cur_forget_ds = dataset.copy(
+                orig_inter_df.iloc[all_idx]
             )
 
-            # Cap to 10% of dataset
-            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+            print(f"Unlearning {len(cur_forget_ds)} interactions")
 
-        elif unlearning_algorithm == "kookmin":
-            retain_batch_size = config["train_batch_size"]
-            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+            # For spam unlearning: skip clean_forget_data (no replacement samples), use only retain_data
+            if spam:
+                print(f"Note: Spam unlearning - skipping clean_forget_data (no replacement samples), using only retain_data")
+                clean_forget_data = None
+            else:
+                clean_forget_ds = dataset.copy(
+                    orig_inter_df.iloc[all_idx[~mask]]
+                )
 
-            neg_grad_retain_sample_size = 128 * forget_size
-            retain_samples_used_for_update = 32 * forget_size
+                # Handle case where all user interactions are sensitive (clean_forget_ds is empty)
+                # Check both before and after data_preparation, since filtering may occur during build()
+                if len(clean_forget_ds) == 0:
+                    print(f"Note: All {len(cur_forget_ds)} interactions for user {u} are sensitive. Using empty clean_forget_data and more retain data instead.")
+                    # Set clean_forget_data to None since we can't create a dataloader from empty dataset
+                    clean_forget_data = None
+                else:
+                    try:
+                        clean_forget_data = data_preparation(config, clean_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+                    except ValueError as e:
+                        if "num_samples should be a positive integer" in str(e):
+                            print(f"Note: All {len(cur_forget_ds)} interactions for user {u} became empty after filtering (likely due to nbr_phase). Using empty clean_forget_data and more retain data instead.")
+                            clean_forget_data = None
+                        else:
+                            raise
 
-            total_samples_needed = max(
-                neg_grad_retain_sample_size,
-                retain_samples_used_for_update
+            forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+
+            retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
+
+            avg_session_length = len(orig_inter_df) / len(unique_users)
+
+            if unlearning_algorithm == "scif":
+                retain_batch_size = 16
+                samples_wanted_constant = 1024
+                retain_samples_used = 128
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                
+                total_samples_needed = max(
+                    retain_samples_used * forget_size,
+                    samples_wanted_constant * forget_size
+                )
+
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+
+            elif unlearning_algorithm == "kookmin":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+                neg_grad_retain_sample_size = 128 * forget_size
+                retain_samples_used_for_update = 32 * forget_size
+
+                total_samples_needed = max(
+                    neg_grad_retain_sample_size,
+                    retain_samples_used_for_update
+                )
+
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+
+            elif unlearning_algorithm == "fanchuan":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+                retain_samples_used_for_update = 32 * forget_size
+                unlearn_iters_contrastive = 8
+
+                total_samples_needed = retain_samples_used_for_update * unlearn_iters_contrastive
+
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+
+            elif unlearning_algorithm == "gif":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+                # GIF: similar to kookmin approach
+                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 128 * forget_size
+                hessian_sample_size = 1024
+
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    hessian_sample_size
+                )
+
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+
+            elif unlearning_algorithm == "ceu":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+                # CEU: needs samples for Hessian computation and influence estimation
+                ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
+                retain_samples_used_for_update = 128 * forget_size
+
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    ceu_hessian_samples
+                )
+
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+
+            elif unlearning_algorithm == "idea":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+                # IDEA: needs samples for Hessian computation and gradient estimation
+                idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
+                retain_samples_used_for_update = 128 * forget_size
+
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    idea_hessian_samples
+                )
+
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+
+            elif unlearning_algorithm == "seif":
+                retain_batch_size = config["train_batch_size"]
+                forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+
+                # SEIF: needs samples for repair phase fine-tuning
+                # Use similar amount as other methods - enough for multiple epochs
+                seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
+                retain_samples_used_for_update = 128 * forget_size * seif_repair_epochs
+
+                total_samples_needed = retain_samples_used_for_update
+
+                # Cap to 10% of dataset
+                total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+                # Note: We pass total_samples_needed directly as it represents interactions needed
+                # The function will collect full user sessions until we have enough interactions
+
+            # Get complete sessions
+            retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
+                total_samples_needed,  # Pass total interactions needed, not sessions
+                unlearned_users_before,
+                user_sample_pool,
+                pool_cursor,
+                user_to_indices,
+            )
+            
+            print(f"Selected {len(retain_users)} user sessions with {len(retain_indices)} total interactions")
+            
+            # Create dataset from selected indices
+            current_retain_data = orig_inter_df.iloc[retain_indices]
+            current_retain_ds = dataset.copy(current_retain_data)
+            
+            # Temporarily modify batch size for this retain loader
+            tmp = config["train_batch_size"]
+            config["train_batch_size"] = retain_batch_size
+            current_retain_loader = data_preparation(config, current_retain_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            config["train_batch_size"] = tmp
+
+            # model training
+            trainer.unlearn(
+                unlearn_request_idx,
+                forget_data,
+                clean_forget_data,
+                retain_train_data=current_retain_loader,
+                retain_valid_data=None,#valid_data,
+                retain_test_data=None,#test_data,
+                unlearning_algorithm=unlearning_algorithm,
+                saved=saved_checkpoint,
+                show_progress=False,  # no progress bar during unlearning as it is short either way
+                max_norm=max_norm,
+                unlearned_users_before=unlearned_users_before,
+                kookmin_init_rate=kookmin_init_rate,
+                retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
+                task_type=config.task_type,
+                damping=damping,
+                gif_damping=gif_damping,
+                gif_scale_factor=gif_scale_factor,
+                gif_iterations=gif_iterations,
+                gif_k_hops=gif_k_hops,
+                gif_use_true_khop=gif_use_true_khop,
+                gif_retain_samples=gif_retain_samples,
+                ceu_lambda=ceu_lambda,
+                ceu_sigma=ceu_sigma,
+                ceu_epsilon=ceu_epsilon,
+                ceu_cg_iterations=ceu_cg_iterations,
+                ceu_hessian_samples=ceu_hessian_samples,
+                idea_damping=idea_damping,
+                idea_sigma=idea_sigma,
+                idea_epsilon=idea_epsilon,
+                idea_delta=idea_delta,
+                idea_iterations=idea_iterations,
+                idea_hessian_samples=idea_hessian_samples,
+                seif_erase_std=seif_erase_std,
+                seif_erase_std_final=seif_erase_std_final,
+                seif_repair_epochs=seif_repair_epochs,
+                seif_forget_class_weight=seif_forget_class_weight,
+                seif_learning_rate=seif_learning_rate,
+                seif_momentum=seif_momentum,
+                seif_weight_decay=seif_weight_decay,
+                original_dataset=dataset,
             )
 
-            # Cap to 10% of dataset
-            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
+            request_end_time = time.time()
+            request_time = request_end_time - request_start_time
+            unlearning_times.append(request_time)
 
-        elif unlearning_algorithm == "fanchuan":
-            retain_batch_size = config["train_batch_size"]
-            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+            print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
 
-            retain_samples_used_for_update = 32 * forget_size
-            unlearn_iters_contrastive = 8
+            if saved_checkpoint:
+                # Store which users have been unlearned at this checkpoint
+                checkpoint_idx = retrain_checkpoint_idx_to_match
+                unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
 
-            total_samples_needed = retain_samples_used_for_update * unlearn_iters_contrastive
+                retrain_checkpoint_idx_to_match += 1
+                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
 
-            # Cap to 10% of dataset
-            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-
-        elif unlearning_algorithm == "gif":
-            retain_batch_size = config["train_batch_size"]
-            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
-
-            # GIF: similar to kookmin approach
-            retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 128 * forget_size
-            hessian_sample_size = 1024
-
-            total_samples_needed = max(
-                retain_samples_used_for_update,
-                hessian_sample_size
-            )
-
-            # Cap to 10% of dataset
-            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-
-        elif unlearning_algorithm == "ceu":
-            retain_batch_size = config["train_batch_size"]
-            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
-
-            # CEU: needs samples for Hessian computation and influence estimation
-            ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
-            retain_samples_used_for_update = 128 * forget_size
-
-            total_samples_needed = max(
-                retain_samples_used_for_update,
-                ceu_hessian_samples
-            )
-
-            # Cap to 10% of dataset
-            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-
-        elif unlearning_algorithm == "idea":
-            retain_batch_size = config["train_batch_size"]
-            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
-
-            # IDEA: needs samples for Hessian computation and gradient estimation
-            idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
-            retain_samples_used_for_update = 128 * forget_size
-
-            total_samples_needed = max(
-                retain_samples_used_for_update,
-                idea_hessian_samples
-            )
-
-            # Cap to 10% of dataset
-            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-
-        elif unlearning_algorithm == "seif":
-            retain_batch_size = config["train_batch_size"]
-            forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
-
-            # SEIF: needs samples for repair phase fine-tuning
-            # Use similar amount as other methods - enough for multiple epochs
-            seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
-            retain_samples_used_for_update = 128 * forget_size * seif_repair_epochs
-
-            total_samples_needed = retain_samples_used_for_update
-
-            # Cap to 10% of dataset
-            total_samples_needed = min(total_samples_needed, retain_limit_absolute)
-            # Note: We pass total_samples_needed directly as it represents interactions needed
-            # The function will collect full user sessions until we have enough interactions
-
-        # Get complete sessions
-        retain_indices, retain_users, pool_cursor = get_retain_sessions_excluding_unlearned_users(
-            total_samples_needed,  # Pass total interactions needed, not sessions
-            unlearned_users_before,
-            user_sample_pool,
-            pool_cursor,
-            user_to_indices,
-        )
-        
-        print(f"Selected {len(retain_users)} user sessions with {len(retain_indices)} total interactions")
-        
-        # Create dataset from selected indices
-        current_retain_data = orig_inter_df.iloc[retain_indices]
-        current_retain_ds = dataset.copy(current_retain_data)
-        
-        # Temporarily modify batch size for this retain loader
-        tmp = config["train_batch_size"]
-        config["train_batch_size"] = retain_batch_size
-        current_retain_loader = data_preparation(config, current_retain_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
-        config["train_batch_size"] = tmp
-
-        # model training
-        trainer.unlearn(
-            unlearn_request_idx,
-            forget_data,
-            clean_forget_data,
-            retain_train_data=current_retain_loader,
-            retain_valid_data=None,#valid_data,
-            retain_test_data=None,#test_data,
-            unlearning_algorithm=unlearning_algorithm,
-            saved=saved_checkpoint,
-            show_progress=False,  # no progress bar during unlearning as it is short either way
-            max_norm=max_norm,
-            unlearned_users_before=unlearned_users_before,
-            kookmin_init_rate=kookmin_init_rate,
-            retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
-            task_type=config.task_type,
-            damping=damping,
-            gif_damping=gif_damping,
-            gif_scale_factor=gif_scale_factor,
-            gif_iterations=gif_iterations,
-            gif_k_hops=gif_k_hops,
-            gif_use_true_khop=gif_use_true_khop,
-            gif_retain_samples=gif_retain_samples,
-            ceu_lambda=ceu_lambda,
-            ceu_sigma=ceu_sigma,
-            ceu_epsilon=ceu_epsilon,
-            ceu_cg_iterations=ceu_cg_iterations,
-            ceu_hessian_samples=ceu_hessian_samples,
-            idea_damping=idea_damping,
-            idea_sigma=idea_sigma,
-            idea_epsilon=idea_epsilon,
-            idea_delta=idea_delta,
-            idea_iterations=idea_iterations,
-            idea_hessian_samples=idea_hessian_samples,
-            seif_erase_std=seif_erase_std,
-            seif_erase_std_final=seif_erase_std_final,
-            seif_repair_epochs=seif_repair_epochs,
-            seif_forget_class_weight=seif_forget_class_weight,
-            seif_learning_rate=seif_learning_rate,
-            seif_momentum=seif_momentum,
-            seif_weight_decay=seif_weight_decay,
-            original_dataset=dataset,
-        )
-
-        request_end_time = time.time()
-        request_time = request_end_time - request_start_time
-        unlearning_times.append(request_time)
-
-        print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
-
-        if saved_checkpoint:
-            # Store which users have been unlearned at this checkpoint
-            checkpoint_idx = retrain_checkpoint_idx_to_match
-            unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
-
-            retrain_checkpoint_idx_to_match += 1
-            config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
-
-        sys.stdout.flush()
-
-        gc.collect()
+            sys.stdout.flush()
+            gc.collect()
 
 
     if "eval_only" not in config or not config["eval_only"]:
@@ -1633,11 +1957,19 @@ def unlearn_recbole(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()    
 
-    if spam:
-        pickle_file = os.path.join(trainer.saved_model_file[:-len(".pth")], "model_interaction_probabilities.pkl")
+    # Save model interaction probabilities if spam mode (default: True, can be disabled with dont_save_interaction_probabilities)
+    if spam and config.get("save_interaction_probabilities", True):
+        # Save to the same directory as the model files
+        # trainer.saved_model_file is like "saved/model_XXX.pth", so dirname gives us "saved"
+        model_dir = os.path.dirname(trainer.saved_model_file) or config.get("checkpoint_dir", "saved")
+        # Create directory if it doesn't exist (open() creates files but not directories)
+        os.makedirs(model_dir, exist_ok=True)
+        pickle_file = os.path.join(model_dir, "model_interaction_probabilities.pkl")
         with open(pickle_file, 'wb') as f:
             pickle.dump(model_interaction_probabilities, f)
         print(f"Saved model interaction probabilities to {pickle_file}")
+    elif spam:
+        print("Skipping model interaction probability saving (use --dont_save_interaction_probabilities to disable)")
 
     # Sensitive item evaluation for unlearned users
     if config['sensitive_category'] is not None:

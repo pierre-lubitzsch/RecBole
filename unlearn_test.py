@@ -143,6 +143,12 @@ def main():
         default=None,
         help="which unlearning checkpoint should be taken as example to create the unlearning set (only take a subset of the unlearning set given)"
     )
+    parser.add_argument(
+        "--unlearning_batchsize",
+        type=int,
+        default=1,
+        help="number of users to unlearn in a single batch (default: 1 for sequential processing)"
+    )
 
     # SCIF-specific parameters
     parser.add_argument(
@@ -348,6 +354,11 @@ def main():
         action="store_true",
         help="if set, only evaluate instead of unlearning and then evaluating",
     )
+    parser.add_argument(
+        "--dont_save_interaction_probabilities",
+        action="store_true",
+        help="if set, skip saving model interaction probabilities to pickle file (saves storage)",
+    )
 
     # Model storage
     parser.add_argument(
@@ -378,6 +389,7 @@ def main():
         "unlearning_algorithm": args.unlearning_algorithm,
         "gpu_id": args.gpu_id,
         "eval_only": args.eval_only,
+        "save_interaction_probabilities": not args.dont_save_interaction_probabilities,
         "task_type": args.task_type,
         "ind": args.ind,
         "topk": args.topk,
@@ -387,6 +399,7 @@ def main():
         "popular_percentage": args.popular_percentage,
         "sensitive_category": args.sensitive_category,
         "retrain_checkpoint_idx_to_match": args.retrain_checkpoint_idx_to_match,
+        "unlearning_batchsize": args.unlearning_batchsize,
         "max_norm": args.max_norm,
         "lissa_train_pair_count_scif": args.lissa_train_pair_count_scif,
         "retain_samples_used_for_update": args.retain_samples_used_for_update,
@@ -438,6 +451,7 @@ def main():
         base_model_path=base_model_path,
         kookmin_init_rate=args.kookmin_init_rate,
         spam=args.spam,
+        unlearning_batchsize=args.unlearning_batchsize,
         damping=args.damping,
         gif_damping=args.gif_damping,
         gif_scale_factor=args.gif_scale_factor,
