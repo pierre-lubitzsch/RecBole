@@ -1152,6 +1152,7 @@ def unlearn_recbole(
             
             # Collect all items for each fraud user from their baskets
             user_items_dict = {}
+            total_items_before_filter = 0
             for user_id_str in fraud_user_ids_str:
                 if user_id_str in fraud_baskets_data:
                     # Get all items from all baskets for this user
@@ -1160,15 +1161,40 @@ def unlearn_recbole(
                         all_items.extend(basket)
                     # Remove duplicates but keep order
                     unique_items = list(dict.fromkeys(all_items))
-                    user_items_dict[int(user_id_str)] = unique_items
+                    total_items_before_filter += len(unique_items)
+                    
+                    # Filter items to only include those that exist in the dataset
+                    # The dataset may have filtered out some items due to minimum interaction thresholds
+                    # Items in JSON can be int/float, token mapping keys might be int or str depending on how they were created
+                    filtered_items = []
+                    token_map = dataset.field2token_id[dataset.iid_field]
+                    for item in unique_items:
+                        # Try to find the item in the token mapping
+                        # Token mapping keys might be strings or integers depending on how the dataset was constructed
+                        item_found = False
+                        # Try as string first (most common case)
+                        if str(item) in token_map:
+                            item_found = True
+                        # Also try as integer in case keys are stored as integers
+                        elif item in token_map:
+                            item_found = True
+                        # Also try converting to int if item is a string representation of a number
+                        elif isinstance(item, str) and item.isdigit() and int(item) in token_map:
+                            item_found = True
+                        
+                        if item_found:
+                            filtered_items.append(item)
+                    
+                    user_items_dict[int(user_id_str)] = filtered_items
             
             # Create DataFrame with user_id and list of all their items
             unlearning_samples = pd.DataFrame({
                 'user_id': list(user_items_dict.keys()),
                 'item_id': list(user_items_dict.values())
             })
+            total_items_after_filter = sum(len(items) for items in user_items_dict.values())
             logger.info(f"Created unlearning samples for {len(unlearning_user_ids)} spam users")
-            logger.info(f"Total items to unlearn: {sum(len(items) for items in user_items_dict.values())}")
+            logger.info(f"Total items to unlearn: {total_items_after_filter} (filtered out {total_items_before_filter - total_items_after_filter} items that don't exist in dataset)")
         elif "sensitive_category" in config and config['sensitive_category'] is not None:
             sensitive_category = config['sensitive_category']
 
@@ -1202,10 +1228,10 @@ def unlearn_recbole(
             sensitive_items = []
             for item in sensitive_items_raw:
                 try:
-                    # Check if this item exists in the dataset by trying to get its token
+                    # Check if this item exists in the dataset by checking the token mapping
                     item_token = str(item)
-                    # Verify it exists in the dataset's item vocabulary
-                    if item_token in dataset.field2id_token[dataset.iid_field]:
+                    # Verify it exists in the dataset's item vocabulary (token -> ID mapping)
+                    if item_token in dataset.field2token_id[dataset.iid_field]:
                         sensitive_items.append(item)
                 except (ValueError, KeyError):
                     # Item doesn't exist in dataset, skip it
@@ -1470,7 +1496,20 @@ def unlearn_recbole(
                     print(f"Warning: user {u} (internal ID {u_id}) has already been unlearned before.")
                     continue
                 uid_seen.add(u_id)
-                forget_items_ids = [dataset.token2id(iid_field, str(item)) for item in forget_items]
+                # Filter out items that don't exist in the dataset
+                # Items from JSON can be int/float, token2id expects string tokens but mapping keys might vary
+                forget_items_ids = []
+                for item in forget_items:
+                    try:
+                        # token2id expects string tokens, but first check if item exists in mapping
+                        # Try string conversion first (most common)
+                        item_token = str(item) if not isinstance(item, str) else item
+                        item_id = dataset.token2id(iid_field, item_token)
+                        forget_items_ids.append(item_id)
+                    except ValueError:
+                        # Item doesn't exist in dataset, skip it
+                        # This can happen if the item was filtered out during dataset construction
+                        pass
                 
                 unlearned_users_before.append(u_id)
                 batch_user_ids.append(u_id)
@@ -1733,7 +1772,20 @@ def unlearn_recbole(
                 print(f"Warning: user {u} (internal ID {u_id}) has already been unlearned before.")
                 continue
             uid_seen.add(u_id)
-            forget_items_ids = [dataset.token2id(iid_field, str(item)) for item in forget_items]
+            # Filter out items that don't exist in the dataset
+            # Items from JSON can be int/float, token2id expects string tokens but mapping keys might vary
+            forget_items_ids = []
+            for item in forget_items:
+                try:
+                    # token2id expects string tokens, but first check if item exists in mapping
+                    # Try string conversion first (most common)
+                    item_token = str(item) if not isinstance(item, str) else item
+                    item_id = dataset.token2id(iid_field, item_token)
+                    forget_items_ids.append(item_id)
+                except ValueError:
+                    # Item doesn't exist in dataset, skip it
+                    # This can happen if the item was filtered out during dataset construction
+                    pass
 
             unlearned_users_before.append(u_id)
 
