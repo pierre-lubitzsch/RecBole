@@ -3929,13 +3929,56 @@ class Trainer(AbstractTrainer):
                 p_targets = torch.exp(scores.index_select(1, target_idx) - logZ)
                 
                 for j in range(len(interaction)):
-                    item_seq = interaction[self.model.ITEM_SEQ][j].cpu().numpy() if hasattr(self.model, 'ITEM_SEQ') else None
+                    # Get target_length for NBR models to properly filter padding
+                    # Note: We don't skip empty baskets as evaluation metrics need the correct count
+                    target_length = None
+                    if hasattr(self.model, 'target_length_field') and self.model.target_length_field in interaction:
+                        target_length = interaction[self.model.target_length_field][j].item()
+                    
+                    # For NBR models, use target_item_list instead of item_id_list
+                    # Check if ITEM_SEQ field exists in interaction (it might not for NBR models)
+                    item_seq = None
+                    if hasattr(self.model, 'ITEM_SEQ'):
+                        # Check if the field actually exists in the interaction
+                        if self.model.ITEM_SEQ in interaction:
+                            seq_data = interaction[self.model.ITEM_SEQ][j].cpu().numpy()
+                            # Filter out padding (typically -1 or 0) from sequence
+                            if hasattr(self.model, 'ITEM_SEQ_LEN') and self.model.ITEM_SEQ_LEN in interaction:
+                                seq_len = interaction[self.model.ITEM_SEQ_LEN][j].item()
+                                if seq_len > 0:
+                                    item_seq = seq_data[:seq_len]
+                                    # Filter out padding values (typically -1 or 0)
+                                    item_seq = item_seq[item_seq > 0] if len(item_seq) > 0 else None
+                            else:
+                                # Filter out padding values (assume -1 or 0 is padding)
+                                item_seq = seq_data[seq_data > 0] if len(seq_data) > 0 else None
+                        elif hasattr(self.model, 'target_items_field') and self.model.target_items_field in interaction:
+                            # NBR models use target_item_list field instead
+                            seq_data = interaction[self.model.target_items_field][j].cpu().numpy()
+                            # Filter out padding based on target_length if available
+                            if target_length is not None and target_length > 0:
+                                item_seq = seq_data[:target_length]
+                                # Further filter out padding values (typically -1 or 0)
+                                item_seq = item_seq[item_seq > 0] if len(item_seq) > 0 else None
+                            elif target_length == 0:
+                                # Empty basket - item_seq should be empty array, not None
+                                item_seq = np.array([], dtype=seq_data.dtype)
+                            else:
+                                # Filter out padding values (assume -1 or 0 is padding)
+                                item_seq = seq_data[seq_data > 0] if len(seq_data) > 0 else None
+                    
                     probabilities = p_targets[j].cpu().numpy()
+                    user_id_val = None
+                    if hasattr(self.model, 'USER_ID') and self.model.USER_ID in interaction:
+                        user_id_val = interaction[self.model.USER_ID][j].item()
+                    
+                    # Always append, even for empty baskets - evaluation metrics need the correct count
                     probability_data.append({
                         'item_seq': item_seq,
                         'positive_item': positive_i[j].item(),
                         'target_probabilities': probabilities,
-                        'user_id': interaction[self.model.USER_ID][j].item() if hasattr(self.model, 'USER_ID') else None
+                        'user_id': user_id_val,
+                        'target_length': target_length if target_length is not None else None
                     })
 
             if self.gpu_available and show_progress:
