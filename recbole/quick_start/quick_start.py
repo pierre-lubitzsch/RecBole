@@ -219,19 +219,18 @@ def run_recbole(
     if remove_forget_set:
         # remove unlearned interactions
         if "spam" in config and config["spam"]:
-            # Construct fraud sessions file path (same format as injection)
-            unlearning_samples_path = os.path.join(
-                config["data_path"],
-                f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
-            )
-
-            # Fall back to legacy naming if new file doesn't exist
-            if not os.path.exists(unlearning_samples_path):
+            # Use new naming convention (bandwagon_unpopular_ratio) - consistent with dataset loading
+            # For NBR: use _fraud_baskets_ with .json, for SBR/CF: use _fraud_sessions_ with .inter
+            if config.task_type == "NBR":
                 unlearning_samples_path = os.path.join(
                     config["data_path"],
-                    f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+                    f"{config['dataset']}_fraud_baskets_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.json"
                 )
-                logger.info(f"Using legacy spam sessions file path: {unlearning_samples_path}")
+            else:
+                unlearning_samples_path = os.path.join(
+                    config["data_path"],
+                    f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+                )
         elif "sensitive_category" in config and config['sensitive_category'] is not None:
             # Handle sensitive category unlearning
             sensitive_category = config['sensitive_category']
@@ -281,8 +280,13 @@ def run_recbole(
         # For NBR task, we need to recreate the dataset with cleaned baskets
         if config.task_type == "NBR":
             # Construct path to unlearning user IDs file (pkl or json)
-            unlearning_users_path_pkl = unlearning_samples_path.replace('.inter', '.pkl')
-            unlearning_users_path_json = unlearning_samples_path.replace('.inter', '.json')
+            # Handle both .inter and .json base file extensions
+            if unlearning_samples_path.endswith('.json'):
+                unlearning_users_path_pkl = unlearning_samples_path.replace('.json', '.pkl')
+                unlearning_users_path_json = unlearning_samples_path  # Already .json
+            else:
+                unlearning_users_path_pkl = unlearning_samples_path.replace('.inter', '.pkl')
+                unlearning_users_path_json = unlearning_samples_path.replace('.inter', '.json')
 
             # Try to load user IDs from pickle or json
             unlearning_user_ids = None
@@ -541,76 +545,123 @@ def run_recbole(
         logger.info("Evaluating on unpoisoned (clean) data...")
         logger.info("="*50)
 
-        # Create unpoisoned dataset by removing fraud sessions
-        # Construct fraud sessions file path
-        unlearning_samples_path = os.path.join(
-            config["data_path"],
-            f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
-        )
-
-        # Fall back to legacy naming if new file doesn't exist
-        if not os.path.exists(unlearning_samples_path):
+        # Create unpoisoned dataset by removing fraud sessions/baskets
+        # Use new naming convention (bandwagon_unpopular_ratio) - consistent with dataset loading
+        # For NBR: use _fraud_baskets_ with .json, for SBR/CF: use _fraud_sessions_ with .inter
+        if config.task_type == "NBR":
             unlearning_samples_path = os.path.join(
                 config["data_path"],
-                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+                f"{config['dataset']}_fraud_baskets_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.json"
             )
-            logger.info(f"Using legacy spam sessions file path: {unlearning_samples_path}")
+        else:
+            unlearning_samples_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+            )
 
         if os.path.exists(unlearning_samples_path):
-            # Read header to infer column names dynamically
-            with open(unlearning_samples_path, 'r') as f:
-                header_line = f.readline().strip()
-
-            # Extract column names from header (e.g., "user_id:token" -> "user_id")
-            column_names = [col.split(':')[0] for col in header_line.split('\t')]
-
-            spam_sessions_df = pd.read_csv(
-                unlearning_samples_path,
-                sep="\t",
-                names=column_names,
-                header=0,
-            )
-
-            # Create mask to remove spam sessions from original dataset
-            spam_session_ids = set(spam_sessions_df['session_id'].unique())
-
             # Get original dataset interactions
             orig_inter_feat = original_dataset.inter_feat
-            session_field = original_dataset.uid_field  # In SBR, uid_field is session_id
+            uid_field = original_dataset.uid_field
 
-            # Handle both Interaction objects and DataFrames
-            if hasattr(orig_inter_feat, 'interaction'):
-                # It's an Interaction object
-                orig_session_ids = orig_inter_feat[session_field].cpu().numpy()
-            elif hasattr(orig_inter_feat, 'to_numpy'):
-                # It's a pandas DataFrame
-                orig_session_ids = orig_inter_feat[session_field].to_numpy()
+            if config.task_type == "NBR":
+                # For NBR, load fraud baskets JSON and extract fraud user IDs
+                import json
+                with open(unlearning_samples_path, 'r') as f:
+                    fraud_baskets_data = json.load(f)
+                
+                # Extract fraud user IDs (keys are user IDs, convert to int for matching)
+                fraud_user_ids = set(int(uid) for uid in fraud_baskets_data.keys())
+                logger.info(f"Found {len(fraud_user_ids)} fraud users in NBR dataset")
+                
+                # Get original user IDs
+                if hasattr(orig_inter_feat, 'interaction'):
+                    # It's an Interaction object
+                    orig_user_ids = orig_inter_feat[uid_field].cpu().numpy()
+                elif hasattr(orig_inter_feat, 'to_numpy'):
+                    # It's a pandas DataFrame
+                    orig_user_ids = orig_inter_feat[uid_field].to_numpy()
+                else:
+                    raise ValueError(f"Unexpected type for orig_inter_feat: {type(orig_inter_feat)}")
+                
+                # Create mask to remove fraud users
+                if hasattr(orig_user_ids, 'item'):
+                    # It's a tensor
+                    mask = ~torch.isin(orig_user_ids, torch.tensor(list(fraud_user_ids), dtype=orig_user_ids.dtype))
+                else:
+                    # It's a numpy array
+                    mask = ~np.isin(orig_user_ids, list(fraud_user_ids))
             else:
-                # It's already a torch tensor
-                orig_session_ids = orig_inter_feat[session_field].cpu().numpy()
+                # For SBR/CF, read fraud sessions from .inter file
+                # Read header to infer column names dynamically
+                with open(unlearning_samples_path, 'r') as f:
+                    header_line = f.readline().strip()
 
-            # Create mask for unpoisoned data
-            unpoisoned_mask = ~pd.Series(orig_session_ids).isin(spam_session_ids).values
+                # Extract column names from header (e.g., "user_id:token" -> "user_id")
+                column_names = [col.split(':')[0] for col in header_line.split('\t')]
 
-            logger.info(f"Original dataset: {len(orig_session_ids)} interactions")
-            logger.info(f"Spam sessions: {len(spam_session_ids)} sessions")
-            logger.info(f"Unpoisoned dataset: {unpoisoned_mask.sum()} interactions")
+                spam_sessions_df = pd.read_csv(
+                    unlearning_samples_path,
+                    sep="\t",
+                    names=column_names,
+                    header=0,
+                )
+
+                # Create mask to remove spam sessions from original dataset
+                spam_session_ids = set(spam_sessions_df['session_id'].unique())
+
+                session_field = original_dataset.uid_field  # In SBR, uid_field is session_id
+
+                # Handle both Interaction objects and DataFrames
+                if hasattr(orig_inter_feat, 'interaction'):
+                    # It's an Interaction object
+                    orig_session_ids = orig_inter_feat[session_field].cpu().numpy()
+                elif hasattr(orig_inter_feat, 'to_numpy'):
+                    # It's a pandas DataFrame
+                    orig_session_ids = orig_inter_feat[session_field].to_numpy()
+                else:
+                    raise ValueError(f"Unexpected type for orig_inter_feat: {type(orig_inter_feat)}")
+
+                # Create mask for unpoisoned data
+                unpoisoned_mask = ~pd.Series(orig_session_ids).isin(spam_session_ids).values
+
+                logger.info(f"Original dataset: {len(orig_session_ids)} interactions")
+                logger.info(f"Spam sessions: {len(spam_session_ids)} sessions")
+                logger.info(f"Unpoisoned dataset: {unpoisoned_mask.sum()} interactions")
 
             # Create unpoisoned dataset by filtering using the mask
             # For Interaction objects, use indexing; for DataFrames, use iloc
-            if hasattr(orig_inter_feat, 'interaction'):
-                # It's an Interaction object - use boolean indexing
-                unpoisoned_indices = np.where(unpoisoned_mask)[0]
-                unpoisoned_inter_feat = orig_inter_feat[unpoisoned_indices]
-            elif hasattr(orig_inter_feat, 'iloc'):
-                # It's a DataFrame
-                unpoisoned_inter_feat = orig_inter_feat.iloc[unpoisoned_mask]
+            if config.task_type == "NBR":
+                # For NBR, mask is already created above
+                if hasattr(orig_inter_feat, 'interaction'):
+                    # It's an Interaction object - use boolean indexing
+                    unpoisoned_indices = np.where(mask)[0]
+                    unpoisoned_inter_feat = orig_inter_feat[unpoisoned_indices]
+                elif hasattr(orig_inter_feat, 'iloc'):
+                    # It's a DataFrame
+                    unpoisoned_inter_feat = orig_inter_feat.iloc[mask]
+                else:
+                    raise ValueError(f"Unexpected type for orig_inter_feat: {type(orig_inter_feat)}")
             else:
-                logger.warning("Unknown inter_feat type, cannot filter. Skipping unpoisoned evaluation.")
-                unpoisoned_test_result = test_result
-                unpoisoned_inter_feat = None
+                # For SBR/CF, use the unpoisoned_mask created above
+                if hasattr(orig_inter_feat, 'interaction'):
+                    # It's an Interaction object - use boolean indexing
+                    unpoisoned_indices = np.where(unpoisoned_mask)[0]
+                    unpoisoned_inter_feat = orig_inter_feat[unpoisoned_indices]
+                elif hasattr(orig_inter_feat, 'iloc'):
+                    # It's a DataFrame
+                    unpoisoned_inter_feat = orig_inter_feat.iloc[unpoisoned_mask]
+                else:
+                    logger.warning("Unknown inter_feat type, cannot filter. Skipping unpoisoned evaluation.")
+                    unpoisoned_test_result = test_result
+                    unpoisoned_inter_feat = None
+        else:
+            # File doesn't exist, skip unpoisoned evaluation
+            logger.warning(f"Fraud file not found: {unlearning_samples_path}. Skipping unpoisoned evaluation.")
+            unpoisoned_inter_feat = None
+            unpoisoned_test_result = test_result
 
-            if unpoisoned_inter_feat is not None:
+        if unpoisoned_inter_feat is not None:
                 unpoisoned_dataset = original_dataset.copy(unpoisoned_inter_feat)
                 logger.info(unpoisoned_dataset)
 
@@ -983,49 +1034,49 @@ def unlearn_recbole(
 
     target_items = None
     if spam:
-        # Try new naming convention first (bandwagon_unpopular_ratio)
-        unlearning_samples_path = os.path.join(
-            config["data_path"],
-            f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
-        )
-        
-        # Fall back to legacy naming if new file doesn't exist
-        if not os.path.exists(unlearning_samples_path):
+        # Use new naming convention (bandwagon_unpopular_ratio) - consistent with dataset loading
+        # For NBR: use _fraud_baskets_ with .json, for SBR/CF: use _fraud_sessions_ with .inter
+        if config.task_type == "NBR":
             unlearning_samples_path = os.path.join(
                 config["data_path"],
-                f"{config['dataset']}_spam_sessions_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+                f"{config['dataset']}_fraud_baskets_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.json"
             )
-            logger.info(f"Using legacy spam sessions file path: {unlearning_samples_path}")
+        else:
+            unlearning_samples_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_fraud_sessions_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.inter"
+            )
         
-        # Try new naming convention for metadata first
+        # Use new naming convention for metadata - consistent with dataset loading
         unlearning_samples_metadata_path = os.path.join(
             config["data_path"],
             f"{config['dataset']}_fraud_metadata_bandwagon_unpopular_ratio_{config['unlearning_fraction']}_seed_{config['unlearn_sample_selection_seed']}.json"
         )
         
-        # Fall back to legacy naming if new file doesn't exist
-        if not os.path.exists(unlearning_samples_metadata_path):
-            unlearning_samples_metadata_path = os.path.join(
-                config["data_path"],
-                f"spam_metadata_dataset_{config['dataset']}_unlearning_fraction_{config['unlearning_fraction']}_n_target_items_{config['n_target_items']}_seed_{config['unlearn_sample_selection_seed']}.json"
+        # Check if metadata file exists before trying to open it
+        if os.path.exists(unlearning_samples_metadata_path):
+            with open(unlearning_samples_metadata_path, "r") as f:
+                metadata = json.load(f)
+                # Convert target items from original tokens to internal IDs
+                target_items_tokens = list(map(int, metadata["target_items"]))
+                target_items = []
+                for item_token in target_items_tokens:
+                    try:
+                        # Convert token to internal ID using dataset's mapping
+                        item_id = dataset.token2id(iid_field, str(item_token))
+                        target_items.append(item_id)
+                    except (ValueError, KeyError):
+                        # Item not in dataset (shouldn't happen for spam items, but handle gracefully)
+                        logger.warning(f"Target item token {item_token} not found in dataset, skipping")
+                        continue
+                target_items = np.array(target_items, dtype=np.int64)
+        else:
+            logger.warning(
+                f"Spam metadata file not found: {unlearning_samples_metadata_path}. "
+                f"Target items will not be available for probability collection. "
+                f"Unlearning will continue but some evaluation features may be limited."
             )
-            logger.info(f"Using legacy spam metadata file path: {unlearning_samples_metadata_path}")
-        
-        with open(unlearning_samples_metadata_path, "r") as f:
-            metadata = json.load(f)
-            # Convert target items from original tokens to internal IDs
-            target_items_tokens = list(map(int, metadata["target_items"]))
-            target_items = []
-            for item_token in target_items_tokens:
-                try:
-                    # Convert token to internal ID using dataset's mapping
-                    item_id = dataset.token2id(iid_field, str(item_token))
-                    target_items.append(item_id)
-                except (ValueError, KeyError):
-                    # Item not in dataset (shouldn't happen for spam items, but handle gracefully)
-                    logger.warning(f"Target item token {item_token} not found in dataset, skipping")
-                    continue
-            target_items = np.array(target_items, dtype=np.int64)
+            target_items = None
     else:
         unlearning_samples_path = os.path.join(
             config["data_path"],
@@ -1059,8 +1110,13 @@ def unlearn_recbole(
         )
     elif config.task_type == "NBR":
         # For NBR, load user IDs from pickle/json file
-        unlearning_users_path_pkl = unlearning_samples_path.replace('.inter', '.pkl')
-        unlearning_users_path_json = unlearning_samples_path.replace('.inter', '.json')
+        # Handle both .inter and .json base file extensions
+        if unlearning_samples_path.endswith('.json'):
+            unlearning_users_path_pkl = unlearning_samples_path.replace('.json', '.pkl')
+            unlearning_users_path_json = unlearning_samples_path  # Already .json
+        else:
+            unlearning_users_path_pkl = unlearning_samples_path.replace('.inter', '.pkl')
+            unlearning_users_path_json = unlearning_samples_path.replace('.inter', '.json')
 
         unlearning_user_ids = None
         if os.path.exists(unlearning_users_path_pkl):
