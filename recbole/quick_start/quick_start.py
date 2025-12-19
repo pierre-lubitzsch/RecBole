@@ -45,6 +45,10 @@ import torch
 import numpy as np
 import gc
 import time
+import tempfile
+import glob
+import re
+import traceback
 
 def run(
     model,
@@ -393,7 +397,6 @@ def run_recbole(
                 logger.info(f"NBR retain dataset: {len(cleaned_data)} users")
 
                 # Save cleaned data to temporary file
-                import tempfile
                 temp_merged_file = tempfile.NamedTemporaryFile(
                     mode='w',
                     suffix='.json',
@@ -566,7 +569,6 @@ def run_recbole(
 
             if config.task_type == "NBR":
                 # For NBR, load fraud baskets JSON and extract fraud user IDs
-                import json
                 with open(unlearning_samples_path, 'r') as f:
                     fraud_baskets_data = json.load(f)
                 
@@ -1142,7 +1144,6 @@ def unlearn_recbole(
         if spam:
             # For spam unlearning, we need to find all items for these fraud users
             # Load the fraud baskets JSON to get all items for each fraud user
-            import json
             with open(unlearning_samples_path, 'r') as f:
                 fraud_baskets_data = json.load(f)
             
@@ -1416,12 +1417,10 @@ def unlearn_recbole(
         else:
             # Search for files matching: base_unlearn_epoch_*_retrain_checkpoint_idx_to_match_r.pth
             pattern = f"{base_filename}_unlearn_epoch_*_retrain_checkpoint_idx_to_match_{r}.pth"
-        import glob
         matching_files = glob.glob(os.path.join(config["checkpoint_dir"], pattern))
         if matching_files:
             # Sort by epoch number (extract from filename) and take the one closest to the checkpoint
             def extract_epoch(fname):
-                import re
                 match = re.search(r'_unlearn_epoch_(\d+)_', fname)
                 return int(match.group(1)) if match else 0
             matching_files.sort(key=extract_epoch)
@@ -2470,7 +2469,6 @@ def unlearn_recbole(
             print(f"Warning: Could not import RULI Privacy Evaluator: {e}")
         except Exception as e:
             print(f"Error during RULI Privacy evaluation: {e}")
-            import traceback
             traceback.print_exc()
 
     return results
