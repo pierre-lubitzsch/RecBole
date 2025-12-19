@@ -46,8 +46,8 @@ def parse_model_filename(filename):
             "eval_type": "retraining"
         }
     
-    # Pattern for unlearning with epoch and checkpoint: model_{model}_seed_{seed}_dataset_{dataset}_unlearning_algorithm_{algorithm}_unlearning_fraction_{fraction}_unlearning_sample_selection_method_{method}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{idx}.pth
-    unlearn_with_checkpoint_pattern = r"model_(\w+)_seed_(\d+)_dataset_([\w_]+)_unlearning_algorithm_(\w+)_unlearning_fraction_([\d.]+)_unlearning_sample_selection_method_(.+?)_unlearn_epoch_(\d+)_retrain_checkpoint_idx_to_match_(\d+)\.pth"
+    # Pattern for unlearning with epoch and checkpoint: model_{model}_seed_{seed}_dataset_{dataset}_unlearning_algorithm_{algorithm}_unlearning_fraction_{fraction}_unlearning_sample_selection_method_{method}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{idx}[_bs{batchsize}].pth
+    unlearn_with_checkpoint_pattern = r"model_(\w+)_seed_(\d+)_dataset_([\w_]+)_unlearning_algorithm_(\w+)_unlearning_fraction_([\d.]+)_unlearning_sample_selection_method_(.+?)_unlearn_epoch_(\d+)_retrain_checkpoint_idx_to_match_(\d+)(?:_bs\d+)?\.pth"
     match = re.match(unlearn_with_checkpoint_pattern, basename)
     if match:
         return {

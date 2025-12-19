@@ -130,12 +130,130 @@ class NextBasketDataset(Dataset):
             + f" [{json_path}]"
         )
 
-        inter_df = self._build_interactions_from_json(json_path)
+        # Load original data
+        with open(json_path, "r") as fp:
+            raw_data: Dict[str, List[List[int]]] = json.load(fp)
+        
+        # Inject fraud baskets if spam=True and not unlearning
+        if self.spam and not self.unlearning:
+            raw_data = self._inject_fraud_baskets(raw_data, dataset_path)
+        
+        # Build interactions from (possibly merged) data
+        inter_df = self._build_interactions_from_json_data(raw_data)
         self.inter_feat = inter_df
         self.user_feat = None
         self.item_feat = None
         # Allow users to still attach additional feature files if desired.
         self._load_additional_feat(token, dataset_path)
+    
+    def _inject_fraud_sessions(self):
+        """Override base class method to prevent loading .inter files for NBR.
+        
+        For NBR datasets, fraud baskets are already injected in _load_data() via
+        _inject_fraud_baskets(). This method is called by the base Dataset.__init__
+        but we don't need it since we handle fraud injection differently (JSON format).
+        """
+        # Fraud baskets are already injected in _load_data() for NBR datasets
+        # No need to load .inter files like SBR datasets do
+        pass
+    
+    def _inject_fraud_baskets(self, raw_data: Dict[str, List[List[int]]], dataset_path: str) -> Dict[str, List[List[int]]]:
+        """Inject fraud baskets into the dataset before ID remapping.
+        
+        This method loads fraud baskets from a separate JSON file and merges them
+        with the original merged JSON data. This must happen BEFORE ID remapping
+        so that both clean and fraud baskets are remapped together consistently.
+        
+        Args:
+            raw_data: Original data dict loaded from JSON
+            dataset_path: Path to dataset directory
+            
+        Returns:
+            Combined data dict with fraud baskets merged in
+        """
+        import json
+        import os
+        
+        # Construct fraud baskets file path
+        unlearning_fraction = self.config['unlearning_fraction']
+        fraud_baskets_path = os.path.join(
+            dataset_path,
+            f"{self.config['dataset']}_fraud_baskets_bandwagon_unpopular_ratio_{unlearning_fraction}_seed_{self.config['unlearn_sample_selection_seed']}.json"
+        )
+        
+        if not os.path.exists(fraud_baskets_path):
+            self.logger.warning(f"Fraud baskets file not found: {fraud_baskets_path}")
+            self.logger.warning("Training on clean data only!")
+            return raw_data
+        
+        self.logger.info(f"Injecting fraud baskets from: {fraud_baskets_path}")
+        
+        # Load fraud baskets JSON
+        with open(fraud_baskets_path, 'r') as f:
+            fraud_data = json.load(f)
+        
+        # Convert keys to strings for consistency
+        fraud_data = {str(k): v for k, v in fraud_data.items()}
+        raw_data = {str(k): v for k, v in raw_data.items()}
+        
+        self.logger.info(f"Loaded {len(fraud_data)} fraud users")
+        
+        # Merge fraud baskets with original data
+        combined_data = {**raw_data, **fraud_data}
+        
+        self.logger.info(f"Merged data: {len(raw_data)} original users + {len(fraud_data)} fraud users = {len(combined_data)} total users")
+        
+        return combined_data
+    
+    def _build_interactions_from_json_data(self, raw_data: Dict[str, List[List[int]]]) -> pd.DataFrame:
+        """Build interactions DataFrame from raw data dict (used for merged data with fraud).
+        
+        This method replicates the logic of _build_interactions_from_json but works with
+        an in-memory dict instead of loading from a file.
+        """
+        rows: List[Dict[str, object]] = []
+        dropped_users = 0
+        
+        # First pass: compute global max basket size if max_basket_items is <= 0 (unlimited)
+        if self.max_basket_items <= 0:
+            global_max_basket_size = 0
+            for user_raw, basket_seq in raw_data.items():
+                baskets = self._sanitize_baskets(basket_seq)
+                if len(baskets) < self.min_basket_count:
+                    continue
+                for basket in baskets:
+                    global_max_basket_size = max(global_max_basket_size, len(basket))
+            # Update max_basket_items to use computed global max
+            self.max_basket_items = global_max_basket_size
+            self.logger.info(
+                f"Computed global max basket size from data: {self.max_basket_items}"
+            )
+        
+        # Second pass: build interactions using the same logic as _build_interactions_from_json
+        for user_raw, basket_seq in raw_data.items():
+            baskets = self._sanitize_baskets(basket_seq)
+            # Filter: need at least MIN_NBR_BASKET_COUNT baskets
+            if len(baskets) < self.min_basket_count:
+                dropped_users += 1
+                continue
+            
+            user_id = int(user_raw)
+            rows.extend(self._build_rows_for_user(user_id, baskets))
+        
+        if not rows:
+            raise ValueError(
+                "No user satisfied MIN_NBR_BASKET_COUNT when building NextBasketDataset."
+            )
+        
+        self.logger.info(
+            f"Constructed {len(rows)} interaction rows from "
+            f"{len(raw_data) - dropped_users} users "
+            f"(dropped {dropped_users} users with < {self.min_basket_count} baskets)."
+        )
+        
+        df = pd.DataFrame(rows)
+        self._register_field_properties()
+        return df
 
     def _build_interactions_from_json(self, json_path: str) -> pd.DataFrame:
         with open(json_path, "r") as fp:

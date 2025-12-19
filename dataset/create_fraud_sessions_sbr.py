@@ -305,7 +305,13 @@ def main(dataset, attack_type="bandwagon", target_strategy="unpopular",
     )
 
     # Rename columns to standard format (remove :token/:float suffixes)
+    original_columns = df.columns.tolist()
     df.columns = [col.split(':')[0] for col in df.columns]
+    
+    # Check if dataset has user_id column (e.g., nowp)
+    has_user_id = 'user_id' in df.columns
+    if has_user_id:
+        print(f"Dataset has user_id column - will preserve format in output")
 
     print(f"Dataset loaded: {len(df)} interactions, {df['session_id'].nunique()} sessions")
 
@@ -342,12 +348,28 @@ def main(dataset, attack_type="bandwagon", target_strategy="unpopular",
     dataset_name = os.path.basename(dataset) if '/' not in dataset else dataset
     fraud_output_path = f"{output_dir}/{dataset_name}_fraud_sessions_{attack_type}_{target_strategy}_ratio_{poisoning_ratio}_seed_{seed}.inter"
     fraud_df_renamed = fraud_df.copy()
-    # Keep session_id to match the base dataset format
-    fraud_df_renamed = fraud_df_renamed.rename(columns={
-        "session_id": "session_id:token",
-        "item_id": "item_id:token",
-        "timestamp": "timestamp:float"
-    })
+    
+    # Add user_id column if original dataset has it (e.g., nowp)
+    if has_user_id:
+        # For fraud sessions, use session_id as user_id (new sessions don't have real users)
+        fraud_df_renamed['user_id'] = fraud_df_renamed['session_id']
+        # Rename columns to match original format
+        fraud_df_renamed = fraud_df_renamed.rename(columns={
+            "user_id": "user_id:token",
+            "session_id": "session_id:token",
+            "item_id": "item_id:token",
+            "timestamp": "timestamp:float"
+        })
+        # Reorder columns to match nowp format: user_id, session_id, item_id, timestamp
+        fraud_df_renamed = fraud_df_renamed[['user_id:token', 'session_id:token', 'item_id:token', 'timestamp:float']]
+    else:
+        # For datasets without user_id (e.g., rsc15), use session_id as user_id in output
+        fraud_df_renamed = fraud_df_renamed.rename(columns={
+            "session_id": "session_id:token",
+            "item_id": "item_id:token",
+            "timestamp": "timestamp:float"
+        })
+    
     fraud_df_renamed.to_csv(fraud_output_path, sep="\t", index=False)
     print(f"\nFraud sessions saved to: {fraud_output_path}")
     print(f"Note: These will be automatically injected when training with --spam flag")

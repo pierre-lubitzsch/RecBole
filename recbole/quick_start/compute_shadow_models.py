@@ -10,16 +10,46 @@ import os
 import json
 import torch
 import numpy as np
+import pandas as pd
 from typing import List, Dict, Optional
 from logging import getLogger
 
 from recbole.config import Config
 from recbole.data import create_dataset, data_preparation
+from recbole.data.dataloader import UnlearnTrainDataLoader
 from recbole.utils import init_logger, get_model, get_trainer, init_seed
 from recbole.quick_start.quick_start import k_subsets_exact_np
 
 
 logger = getLogger()
+
+
+def _get_eligible_users(dataset_obj, min_interactions=4):
+    """
+    Get users that have at least min_interactions interactions remaining.
+    This ensures we only create shadow models for users with sufficient data.
+    
+    Args:
+        dataset_obj: Dataset object with filtered interactions
+        min_interactions: Minimum number of interactions required per user
+        
+    Returns:
+        numpy array of eligible user IDs (internal IDs)
+    """
+    uid_field = dataset_obj.uid_field
+    user_ids = dataset_obj.inter_feat[uid_field].to_numpy()
+    
+    # Count interactions per user
+    unique_users, counts = np.unique(user_ids, return_counts=True)
+    
+    # Filter to users with >= min_interactions
+    eligible_mask = counts >= min_interactions
+    eligible_users = unique_users[eligible_mask]
+    
+    logger.info(f"Found {len(eligible_users)} eligible users (>= {min_interactions} interactions) "
+               f"out of {len(unique_users)} total users")
+    
+    return eligible_users
 
 
 def compute_shadow_models(
@@ -112,8 +142,6 @@ def compute_shadow_models(
     
     # Remove forget set if provided (shadow models should be trained on retain set)
     if sensitive_category is not None and unlearning_fraction is not None:
-        import pandas as pd
-        
         logger.info(f"Removing forget set (sensitive_category={sensitive_category}, "
                    f"unlearning_fraction={unlearning_fraction})")
         
@@ -192,13 +220,19 @@ def compute_shadow_models(
         logger.info(f"Removed {n_forget_removed} forget interactions (out of {len(forget_pairs)} in forget set). "
                    f"Retain set has {len(dataset_obj.inter_feat)} interactions")
     
-    # Get unique users and create k subsets
+    # Get eligible users (>= 4 interactions) and create k subsets
+    # Only use eligible users to ensure each partition has sufficient data
     uid_field = dataset_obj.uid_field
-    user_ids = dataset_obj.inter_feat[uid_field].to_numpy()
-    unique_users = np.sort(np.unique(user_ids))
+    eligible_users = _get_eligible_users(dataset_obj, min_interactions=4)
     
-    logger.info(f"Total unique users: {len(unique_users)}")
-    user_subsets = k_subsets_exact_np(unique_users, k=k)
+    if len(eligible_users) == 0:
+        raise ValueError(
+            "No eligible users found with >= 4 interactions after filtering. "
+            "Cannot create shadow models."
+        )
+    
+    logger.info(f"Creating {k} user subsets from {len(eligible_users)} eligible users")
+    user_subsets = k_subsets_exact_np(eligible_users, k=k)
     logger.info(f"Created {k} user subsets using k_subsets_exact_np")
     
     # Create shadow model directory structure: ./saved/shadow_models/{dataset}/{model}/
@@ -242,7 +276,6 @@ def compute_shadow_models(
             raise ValueError(
                 "create_unlearned_models=True requires sensitive_category and unlearning_fraction"
             )
-        import pandas as pd
         # Load forget set for unlearning
         unlearning_samples_path = os.path.join(
             config["data_path"],
@@ -286,11 +319,25 @@ def compute_shadow_models(
         
         # Create dataset excluding users in this partition (OUT model)
         users_to_drop = user_subsets[partition_idx]  # Already a list from k_subsets_exact_np
-        removed_mask = ~np.isin(user_ids, users_to_drop)
+        # Get user_ids from current dataset_obj (after forget set removal if applicable)
+        current_user_ids = dataset_obj.inter_feat[uid_field].to_numpy()
+        removed_mask = ~np.isin(current_user_ids, users_to_drop)
         
         partition_dataset = dataset_obj.copy(dataset_obj.inter_feat[removed_mask])
+        
+        # Verify partition is valid: check that remaining users still have enough interactions
+        partition_user_ids = partition_dataset.inter_feat[uid_field].to_numpy()
+        partition_unique_users, partition_counts = np.unique(partition_user_ids, return_counts=True)
+        users_with_sufficient_data = partition_unique_users[partition_counts >= 4]
+        
+        if len(users_with_sufficient_data) == 0:
+            logger.warning(f"Partition {partition_idx}: No users with >= 4 interactions after exclusion. "
+                          f"Skipping this partition.")
+            continue
+        
         logger.info(f"Partition {partition_idx}: {len(users_to_drop)} users excluded, "
-                   f"{len(partition_dataset.inter_feat)} interactions remaining")
+                   f"{len(partition_dataset.inter_feat)} interactions remaining, "
+                   f"{len(users_with_sufficient_data)} users with >= 4 interactions")
         
         # Prepare data with same split as main experiment
         train_data, valid_data, test_data = data_preparation(config, partition_dataset)
@@ -319,7 +366,7 @@ def compute_shadow_models(
             # Save checkpoint
             checkpoint = {
                 "state_dict": shadow_model.state_dict(),
-                "other_parameter": shadow_model.get_other_parameter(),
+                "other_parameter": shadow_model.other_parameter(),
                 "config": config,
                 "partition_idx": partition_idx,
             }
@@ -356,12 +403,11 @@ def compute_shadow_models(
                         algo_kwargs.update(unlearning_kwargs)
                         
                         # Create a fresh copy of the shadow model for this algorithm
-                        from recbole.utils import get_model
                         algo_unlearned_model = get_model(config["model"])(
                             config, train_data._dataset
                         ).to(config["device"])
                         algo_unlearned_model.load_state_dict(shadow_model.state_dict())
-                        algo_unlearned_model.load_other_parameter(shadow_model.get_other_parameter())
+                        algo_unlearned_model.load_other_parameter(shadow_model.other_parameter())
                         
                         # Create trainer for this model
                         algo_trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, algo_unlearned_model)
@@ -386,7 +432,7 @@ def compute_shadow_models(
                         
                         checkpoint = {
                             "state_dict": unlearned_model.state_dict(),
-                            "other_parameter": unlearned_model.get_other_parameter(),
+                            "other_parameter": unlearned_model.other_parameter(),
                             "config": config,
                             "partition_idx": partition_idx,
                             "unlearning_algorithm": algo,
@@ -465,10 +511,6 @@ def _create_unlearned_shadow_model(
     Returns:
         Unlearned shadow model
     """
-    import pandas as pd
-    from recbole.data import data_preparation
-    from recbole.data.dataloader import UnlearnTrainDataLoader
-    
     logger = getLogger()
     
     # Create a copy of the model for unlearning

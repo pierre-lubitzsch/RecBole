@@ -366,7 +366,12 @@ class Trainer(AbstractTrainer):
 
         # Check if we're in unlearning context (not retraining)
         if retrain_checkpoint_idx_to_match is not None and not retrain_flag:
-            saved_model_file = f"{saved_model_file[:-len('.pth')]}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{retrain_checkpoint_idx_to_match}.pth"
+            # Optionally include unlearning_batchsize in filename for hyperparameter tests
+            unlearning_batchsize = kwargs.pop("unlearning_batchsize", None) if kwargs else None
+            if unlearning_batchsize is not None:
+                saved_model_file = f"{saved_model_file[:-len('.pth')]}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{retrain_checkpoint_idx_to_match}_bs{unlearning_batchsize}.pth"
+            else:
+                saved_model_file = f"{saved_model_file[:-len('.pth')]}_unlearn_epoch_{epoch}_retrain_checkpoint_idx_to_match_{retrain_checkpoint_idx_to_match}.pth"
         state = {
             "config": self.config,
             "epoch": epoch,
@@ -3553,6 +3558,7 @@ class Trainer(AbstractTrainer):
         seif_momentum=0.9,
         seif_weight_decay=5e-4,
         original_dataset=None,
+        unlearning_batchsize=None,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -3731,7 +3737,9 @@ class Trainer(AbstractTrainer):
             )
 
         if saved:
-            self._save_checkpoint(epoch_idx, verbose=verbose, retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,)
+            # Only include batchsize in filename if explicitly set and != 1 (for hyperparameter tests)
+            # When using the best batchsize normally, it won't be in the filename
+            self._save_checkpoint(epoch_idx, verbose=verbose, retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match, unlearning_batchsize=unlearning_batchsize)
             # self.train_loss_dict[epoch_idx] = (
             #     sum(train_loss) if isinstance(train_loss, tuple) else train_loss
             # )

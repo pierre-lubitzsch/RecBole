@@ -315,7 +315,8 @@ def run_recbole(
 
             logger.info(f"NBR unlearning: {len(unlearning_user_ids)} users to clean")
 
-            unlearning_user_ids_set = set(unlearning_user_ids)
+            # Normalize user IDs to strings for comparison (JSON keys are always strings)
+            unlearning_user_ids_set = set(str(uid) for uid in unlearning_user_ids)
 
             # Now we need to create a cleaned merged JSON file
             # Load the sensitive items to remove
@@ -365,7 +366,8 @@ def run_recbole(
                 users_filtered_out = 0
 
                 for user_id, baskets in merged_data.items():
-                    if user_id in unlearning_user_ids_set:
+                    # user_id from JSON is always a string, so compare as string
+                    if str(user_id) in unlearning_user_ids_set:
                         # Remove sensitive items from this user's baskets
                         clean_baskets = []
                         for basket in baskets:
@@ -1302,11 +1304,52 @@ def unlearn_recbole(
     # Calculate checkpoints based on number of batches
     if batch_size > 1:
         total_batches = (total_users + batch_size - 1) // batch_size  # Ceiling division
-        unlearning_checkpoints = [total_batches // 4, total_batches // 2, 3 * total_batches // 4, total_batches - 1]
-        eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
+        unlearning_checkpoints_batch = [total_batches // 4, total_batches // 2, 3 * total_batches // 4, total_batches - 1]
+        # Convert batch indices to user indices (epoch numbers in saved files)
+        # When batch_size > 1, unlearn_request_idx is the batch index (0, 1, 2, ...)
+        # But we need to find the actual user index where the checkpoint was saved
+        # The checkpoint is saved at unlearn_request_idx, which equals the batch index
+        # So we need to search for files with retrain_checkpoint_idx_to_match, not specific epoch numbers
+        # We'll use the batch indices directly for searching, but the actual saved files use batch indices as epochs
+        unlearning_checkpoints = unlearning_checkpoints_batch  # These are batch indices, which match the epoch in saved files
     else:
         unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
-        eval_files = [f"{trainer.saved_model_file[:-len('.pth')]}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth" for e, r in zip(unlearning_checkpoints, range(4))]
+    
+    # Construct eval_files by searching for files matching the pattern
+    # The actual saved files use the request index as epoch, not the checkpoint batch index
+    # Optionally include unlearning_batchsize in the pattern for hyperparameter tests
+    base_filename = trainer.saved_model_file[:-len('.pth')]
+    batch_size = config.get("unlearning_batchsize", 1)
+    # Only use batchsize suffix if it's explicitly set and not the default (for hyperparameter tests)
+    use_batchsize_suffix = batch_size != 1
+    eval_files = []
+    for r in range(4):
+        if use_batchsize_suffix:
+            # Search for files matching: base_unlearn_epoch_*_retrain_checkpoint_idx_to_match_r_bs{batchsize}.pth
+            pattern = f"{base_filename}_unlearn_epoch_*_retrain_checkpoint_idx_to_match_{r}_bs{batch_size}.pth"
+        else:
+            # Search for files matching: base_unlearn_epoch_*_retrain_checkpoint_idx_to_match_r.pth
+            pattern = f"{base_filename}_unlearn_epoch_*_retrain_checkpoint_idx_to_match_{r}.pth"
+        import glob
+        matching_files = glob.glob(os.path.join(config["checkpoint_dir"], pattern))
+        if matching_files:
+            # Sort by epoch number (extract from filename) and take the one closest to the checkpoint
+            def extract_epoch(fname):
+                import re
+                match = re.search(r'_unlearn_epoch_(\d+)_', fname)
+                return int(match.group(1)) if match else 0
+            matching_files.sort(key=extract_epoch)
+            # Take the file with epoch closest to the checkpoint index
+            checkpoint_idx = unlearning_checkpoints[r] if r < len(unlearning_checkpoints) else unlearning_checkpoints[-1]
+            closest_file = min(matching_files, key=lambda f: abs(extract_epoch(f) - checkpoint_idx))
+            eval_files.append(closest_file)
+        else:
+            # Fallback to original pattern if no matches found
+            e = unlearning_checkpoints[r] if r < len(unlearning_checkpoints) else unlearning_checkpoints[-1]
+            if use_batchsize_suffix:
+                eval_files.append(f"{base_filename}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}_bs{batch_size}.pth")
+            else:
+                eval_files.append(f"{base_filename}_unlearn_epoch_{e}_retrain_checkpoint_idx_to_match_{r}.pth")
     
     eval_masks = []
     # Track which users were unlearned at each checkpoint for sensitive item evaluation
@@ -1530,6 +1573,8 @@ def unlearn_recbole(
             config["train_batch_size"] = tmp
             
             # model training
+            # Only include batchsize in filename for hyperparameter tests (when batchsize != 1)
+            unlearning_batchsize_for_filename = batch_size if batch_size != 1 else None
             trainer.unlearn(
                 unlearn_request_idx,
                 forget_data,
@@ -1546,6 +1591,7 @@ def unlearn_recbole(
                 retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
                 task_type=config.task_type,
                 damping=damping,
+                unlearning_batchsize=unlearning_batchsize_for_filename,
                 gif_damping=gif_damping,
                 gif_scale_factor=gif_scale_factor,
                 gif_iterations=gif_iterations,
@@ -1784,6 +1830,8 @@ def unlearn_recbole(
             config["train_batch_size"] = tmp
 
             # model training
+            # Only include batchsize in filename for hyperparameter tests (when batchsize != 1)
+            unlearning_batchsize_for_filename = batch_size if batch_size != 1 else None
             trainer.unlearn(
                 unlearn_request_idx,
                 forget_data,
@@ -1800,6 +1848,7 @@ def unlearn_recbole(
                 retrain_checkpoint_idx_to_match=retrain_checkpoint_idx_to_match,
                 task_type=config.task_type,
                 damping=damping,
+                unlearning_batchsize=unlearning_batchsize_for_filename,
                 gif_damping=gif_damping,
                 gif_scale_factor=gif_scale_factor,
                 gif_iterations=gif_iterations,
@@ -2069,6 +2118,30 @@ def unlearn_recbole(
                                 dataset.uid_field: torch.tensor([user_id], device=trainer.device),
                                 item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
                                 item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                            }
+                        elif config['task_type'] == 'NBR':
+                            # For NBR models, we need to provide history baskets
+                            # Get the user's interaction data from the dataset
+                            user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                            user_indices = torch.where(user_mask)[0]
+
+                            if len(user_indices) == 0:
+                                # User has no interactions, skip
+                                continue
+
+                            # Get the last interaction which contains the longest/complete history
+                            last_idx = user_indices[-1].item()
+
+                            # Get the NBR history fields (these are set by NextBasketDataset)
+                            history_items_field = dataset.history_items_field  # 'history_item_matrix'
+                            history_length_field = dataset.history_length_field  # 'history_basket_length'
+                            history_item_len_field = dataset.history_item_len_field  # 'history_item_length_per_basket'
+
+                            interaction = {
+                                dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                                history_items_field: dataset.inter_feat[history_items_field][last_idx].unsqueeze(0).to(trainer.device),
+                                history_length_field: dataset.inter_feat[history_length_field][last_idx].unsqueeze(0).to(trainer.device),
+                                history_item_len_field: dataset.inter_feat[history_item_len_field][last_idx].unsqueeze(0).to(trainer.device)
                             }
                         else:
                             # For CF models, only user_id is needed

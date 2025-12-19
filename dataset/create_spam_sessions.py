@@ -195,6 +195,7 @@ def main(dataset, seed=2, unlearning_fraction=0.001, n_target_items=10):
     
     if dataset == "rsc15":
         filepath = "./rsc15/rsc15.inter"
+        output_dir = "./rsc15"
         
         # Check if file exists
         if not os.path.exists(filepath):
@@ -215,58 +216,150 @@ def main(dataset, seed=2, unlearning_fraction=0.001, n_target_items=10):
             sep="\t",
         )
         
-        print(f"Dataset loaded: {len(df)} interactions, {df['session_id'].nunique()} sessions")
+        # For rsc15, we don't have user_id, so we'll use session_id as user_id in output
+        has_user_id = False
         
-        # requirement such that we add the correct amount of interactions:
-        # the amount of added interactions divided by the size of the resulting dataset has to be unlearning_fraction.
-        # sessions_to_add / (|dataset| + sessions_to_add) = unlearning_fraction
-        # iff sessions_to_add = unlearning_fraction * |dataset| / (1 - unlearning_fraction)
-        sessions_to_add = math.ceil(unlearning_fraction * df['session_id'].nunique() / (1 - unlearning_fraction))
-        print(f"unlearning_fraction: {unlearning_fraction}")
-        print(f"We need to add {sessions_to_add} sessions to get an unlearning set of size unlearning_fraction * sessions_in_poisoned_dataset.")
+    elif dataset == "nowp":
+        filepath = "./nowp/nowp.inter"
+        output_dir = "./nowp"
+        
+        # Check if file exists
+        if not os.path.exists(filepath):
+            print(f"Error: File {filepath} not found!")
+            return
+        
+        print(f"Loading dataset from {filepath}...")
+        print(f"Using random seed: {seed}")
+        # Read nowp.inter which has user_id, session_id, item_id, timestamp
+        df_full = pd.read_csv(
+            filepath,
+            header=0,
+            sep="\t",
+        )
+        
+        # Extract columns we need for spam generation (session_id, item_id, timestamp)
+        # For nowp, item_id is string (musicbrainz_id), so we'll keep it as is
+        df = df_full[['session_id:token', 'item_id:token', 'timestamp:float']].copy()
+        df.columns = ['session_id', 'item_id', 'timestamp']
+        
+        # Convert session_id to int (it should be numeric in nowp)
+        df['session_id'] = df['session_id'].astype(np.int64)
+        
+        # Convert timestamp to int64 (it's already numeric)
+        df['timestamp'] = df['timestamp'].astype(np.int64)
+        
+        # item_id stays as string (object) - this is fine for the generator
+        
+        # Store original user_id mapping for later use
+        if 'user_id:token' in df_full.columns:
+            has_user_id = True
+            # Create mapping from session_id to user_id (take first user_id for each session)
+            user_id_mapping = df_full.groupby('session_id:token')['user_id:token'].first().to_dict()
+        else:
+            has_user_id = False
+            user_id_mapping = None
+    else:
+        print(f"Error: Unsupported dataset '{dataset}'. Supported datasets: rsc15, nowp")
+        return
+    
+    print(f"Dataset loaded: {len(df)} interactions, {df['session_id'].nunique()} sessions")
+    
+    # requirement such that we add the correct amount of interactions:
+    # the amount of added interactions divided by the size of the resulting dataset has to be unlearning_fraction.
+    # sessions_to_add / (|dataset| + sessions_to_add) = unlearning_fraction
+    # iff sessions_to_add = unlearning_fraction * |dataset| / (1 - unlearning_fraction)
+    sessions_to_add = math.ceil(unlearning_fraction * df['session_id'].nunique() / (1 - unlearning_fraction))
+    print(f"unlearning_fraction: {unlearning_fraction}")
+    print(f"We need to add {sessions_to_add} sessions to get an unlearning set of size unlearning_fraction * sessions_in_poisoned_dataset.")
 
-        # Define target items to promote:
-        # Randomly sample from the bottom 20% least popular items
-        item_popularity = df['item_id'].value_counts()
-        bottom_20_percent_count = int(len(item_popularity) * 0.2)
-        bottom_20_items = item_popularity.tail(bottom_20_percent_count).index.tolist()
-        target_items = np.random.choice(bottom_20_items, size=min(n_target_items, len(bottom_20_items)), replace=False).tolist()
+    # Define target items to promote:
+    # Randomly sample from the bottom 20% least popular items
+    item_popularity = df['item_id'].value_counts()
+    bottom_20_percent_count = int(len(item_popularity) * 0.2)
+    bottom_20_items = item_popularity.tail(bottom_20_percent_count).index.tolist()
+    target_items = np.random.choice(bottom_20_items, size=min(n_target_items, len(bottom_20_items)), replace=False).tolist()
 
-        print(f"\nTarget items to promote: {target_items}")
+    print(f"\nTarget items to promote: {target_items}")
 
-        generator = SpamSessionGenerator(df, target_items, sessions_to_add, seed=seed)
+    generator = SpamSessionGenerator(df, target_items, sessions_to_add, seed=seed)
+    
+    spam_df = generator.generate_spam_sessions()
+    combined_df = generator.inject_spam_sessions(spam_df)
+    
+    # Prepare output format based on dataset
+    if dataset == "nowp" and has_user_id:
+        # For nowp, add user_id column to spam sessions (use session_id as user_id for spam)
+        spam_df_output = spam_df.copy()
+        spam_df_output['user_id'] = spam_df_output['session_id']
         
-        spam_df = generator.generate_spam_sessions()
-        combined_df = generator.inject_spam_sessions(spam_df)
+        # Rename columns to RecBole format
+        spam_df_output = spam_df_output.rename(columns={
+            "user_id": "user_id:token",
+            "session_id": "session_id:token", 
+            "item_id": "item_id:token", 
+            "timestamp": "timestamp:float"
+        })
         
-        # Save spam sessions separately
-        spam_output_path = f"./rsc15/rsc15_spam_sessions_dataset_{dataset}_unlearning_fraction_{unlearning_fraction}_n_target_items_{n_target_items}_seed_{seed}.inter"
-        spam_df = spam_df.rename(columns={"session_id": "user_id:token", "item_id": "item_id:token", "timestamp": "timestamp:float"})
-        spam_df.to_csv(spam_output_path, sep="\t", index=False)
-        print(f"\nSpam sessions saved to: {spam_output_path}")
+        # Reorder columns to match nowp format
+        spam_df_output = spam_df_output[['user_id:token', 'session_id:token', 'item_id:token', 'timestamp:float']]
         
+        # For combined dataset, we need to merge with original user_id
+        # Since we're adding new sessions, we'll use session_id as user_id for new sessions
+        combined_df_output = combined_df.copy()
+        if user_id_mapping is not None:
+            # Map original sessions to their user_ids
+            combined_df_output['user_id'] = combined_df_output['session_id'].map(user_id_mapping)
+            # For new spam sessions (not in mapping), use session_id as user_id
+            combined_df_output['user_id'] = combined_df_output['user_id'].fillna(combined_df_output['session_id'])
+        else:
+            combined_df_output['user_id'] = combined_df_output['session_id']
         
-        # Save combined dataset
-        combined_output_path = f"./rsc15/rsc15_with_spam_dataset_{dataset}_unlearning_fraction_{unlearning_fraction}_n_target_items_{n_target_items}_seed_{seed}.inter"
-        combined_df = combined_df.rename(columns={"session_id": "user_id:token", "item_id": "item_id:token", "timestamp": "timestamp:float"})
-        combined_df.to_csv(combined_output_path, sep="\t", index=False)
-        print(f"Combined dataset saved to: {combined_output_path}")
-        
-        # Save metadata about the attack using renamed cols
-        metadata = {
-            'original_sessions': df['session_id'].nunique(),
-            'spam_sessions': spam_df['user_id:token'].nunique(),
-            'target_items': target_items,
-            'sessions_to_add': sessions_to_add,
-            'seed': seed,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        import json
-        metadata_path = f"./rsc15/spam_metadata_dataset_{dataset}_unlearning_fraction_{unlearning_fraction}_n_target_items_{n_target_items}_seed_{seed}.json"
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        print(f"Attack metadata saved to: {metadata_path}")
+        combined_df_output = combined_df_output.rename(columns={
+            "user_id": "user_id:token",
+            "session_id": "session_id:token",
+            "item_id": "item_id:token", 
+            "timestamp": "timestamp:float"
+        })
+        combined_df_output = combined_df_output[['user_id:token', 'session_id:token', 'item_id:token', 'timestamp:float']]
+    else:
+        # For rsc15, use session_id as user_id in output
+        spam_df_output = spam_df.rename(columns={
+            "session_id": "user_id:token", 
+            "item_id": "item_id:token", 
+            "timestamp": "timestamp:float"
+        })
+        combined_df_output = combined_df.rename(columns={
+            "session_id": "user_id:token", 
+            "item_id": "item_id:token", 
+            "timestamp": "timestamp:float"
+        })
+    
+    # Save spam sessions separately
+    spam_output_path = f"{output_dir}/{dataset}_spam_sessions_dataset_{dataset}_unlearning_fraction_{unlearning_fraction}_n_target_items_{n_target_items}_seed_{seed}.inter"
+    spam_df_output.to_csv(spam_output_path, sep="\t", index=False)
+    print(f"\nSpam sessions saved to: {spam_output_path}")
+    
+    
+    # Save combined dataset
+    combined_output_path = f"{output_dir}/{dataset}_with_spam_dataset_{dataset}_unlearning_fraction_{unlearning_fraction}_n_target_items_{n_target_items}_seed_{seed}.inter"
+    combined_df_output.to_csv(combined_output_path, sep="\t", index=False)
+    print(f"Combined dataset saved to: {combined_output_path}")
+    
+    # Save metadata about the attack using renamed cols
+    metadata = {
+        'original_sessions': df['session_id'].nunique(),
+        'spam_sessions': spam_df['session_id'].nunique(),
+        'target_items': target_items,
+        'sessions_to_add': sessions_to_add,
+        'seed': seed,
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    import json
+    metadata_path = f"{output_dir}/spam_metadata_dataset_{dataset}_unlearning_fraction_{unlearning_fraction}_n_target_items_{n_target_items}_seed_{seed}.json"
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Attack metadata saved to: {metadata_path}")
 
 
 if __name__ == "__main__":
