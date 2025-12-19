@@ -1137,8 +1137,38 @@ def unlearn_recbole(
 
         logger.info(f"Loaded {len(unlearning_user_ids)} user IDs for NBR unlearning")
 
-        # Load the sensitive items that need to be unlearned
-        if "sensitive_category" in config and config['sensitive_category'] is not None:
+        # For spam unlearning, we just need to unlearn the fraud users (all their items)
+        # For sensitive category unlearning, we need to unlearn specific items from those users
+        if spam:
+            # For spam unlearning, we need to find all items for these fraud users
+            # Load the fraud baskets JSON to get all items for each fraud user
+            import json
+            with open(unlearning_samples_path, 'r') as f:
+                fraud_baskets_data = json.load(f)
+            
+            # Convert user IDs to strings for matching (JSON keys are strings)
+            fraud_user_ids_str = [str(uid) for uid in unlearning_user_ids]
+            
+            # Collect all items for each fraud user from their baskets
+            user_items_dict = {}
+            for user_id_str in fraud_user_ids_str:
+                if user_id_str in fraud_baskets_data:
+                    # Get all items from all baskets for this user
+                    all_items = []
+                    for basket in fraud_baskets_data[user_id_str]:
+                        all_items.extend(basket)
+                    # Remove duplicates but keep order
+                    unique_items = list(dict.fromkeys(all_items))
+                    user_items_dict[int(user_id_str)] = unique_items
+            
+            # Create DataFrame with user_id and list of all their items
+            unlearning_samples = pd.DataFrame({
+                'user_id': list(user_items_dict.keys()),
+                'item_id': list(user_items_dict.values())
+            })
+            logger.info(f"Created unlearning samples for {len(unlearning_user_ids)} spam users")
+            logger.info(f"Total items to unlearn: {sum(len(items) for items in user_items_dict.values())}")
+        elif "sensitive_category" in config and config['sensitive_category'] is not None:
             sensitive_category = config['sensitive_category']
 
             # Try different naming conventions for sensitive items file
@@ -1196,7 +1226,7 @@ def unlearn_recbole(
             })
         else:
             raise ValueError(
-                "For NBR unlearning, 'sensitive_category' must be specified in config"
+                "For NBR unlearning, either 'spam=True' or 'sensitive_category' must be specified in config"
             )
     else:
         raise ValueError(f"Unsupported task_type: {config.task_type}. Only 'SBR', 'CF', and 'NBR' are supported.")
@@ -2100,7 +2130,7 @@ def unlearn_recbole(
         print("Skipping model interaction probability saving (use --dont_save_interaction_probabilities to disable)")
 
     # Sensitive item evaluation for unlearned users
-    if config['sensitive_category'] is not None:
+    if config.get('sensitive_category') is not None:
         print("Sensitive Item Evaluation")
 
         sensitive_category = config['sensitive_category']
