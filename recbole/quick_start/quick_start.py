@@ -1567,7 +1567,15 @@ def unlearn_recbole(
                             raise
             
             # Always create forget_data (spam data to unlearn)
-            forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            # Handle case where forget_data becomes empty after filtering during data_preparation
+            try:
+                forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            except ValueError as e:
+                if "num_samples should be a positive integer" in str(e):
+                    print(f"Warning: forget_data for batch {unlearn_request_idx + 1} became empty after filtering (likely due to dataset filtering like min_user_inter_num). Skipping this batch.")
+                    continue
+                else:
+                    raise
             
             retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
             
@@ -1834,7 +1842,15 @@ def unlearn_recbole(
                         else:
                             raise
 
-            forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            # Handle case where forget_data becomes empty after filtering during data_preparation
+            try:
+                forget_data = data_preparation(config, cur_forget_ds, unlearning=True, spam=spam, sampler=unlearning_sampler)
+            except ValueError as e:
+                if "num_samples should be a positive integer" in str(e):
+                    print(f"Warning: forget_data for user {u} became empty after filtering (likely due to dataset filtering like min_user_inter_num). Skipping this user.")
+                    continue
+                else:
+                    raise
 
             retain_limit_absolute = int(0.1 * len(orig_inter_df))  # 10% of full dataset
 
