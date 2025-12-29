@@ -3420,6 +3420,10 @@ class Trainer(AbstractTrainer):
         # PHASE 2: REPAIR - Fine-tune on retain set with weighted loss
         print(f"[SEIF] Phase 2: Repair - Fine-tuning on retain set for {seif_repair_epochs} epochs...")
 
+        # Track start time for timeout check (10 minutes = 600 seconds)
+        repair_start_time = time()
+        timeout_seconds = 10 * 60  # 10 minutes
+
         # Temporarily save original learning rate
         original_lr = self.optimizer.param_groups[0]['lr']
 
@@ -3440,12 +3444,27 @@ class Trainer(AbstractTrainer):
         print(f"[SEIF] Identified {len(forget_items)} unique forget items")
 
         for repair_epoch in range(seif_repair_epochs):
+            # Check if we've exceeded the 30 minute timeout
+            elapsed_time = time() - repair_start_time
+            if elapsed_time >= timeout_seconds:
+                print(f"[SEIF] Timeout reached ({elapsed_time/60:.2f} minutes). Stopping repair epochs early at epoch {repair_epoch + 1}/{seif_repair_epochs}")
+                break
             epoch_loss = 0.0
             batch_count = 0
 
             self.model.train()
+            
+            timeout_reached = False
 
             for batch_idx, interaction in enumerate(retain_train_data):
+                # Check timeout periodically (every 10 batches to avoid overhead)
+                if batch_idx % 10 == 0:
+                    elapsed_time = time() - repair_start_time
+                    if elapsed_time >= timeout_seconds:
+                        print(f"[SEIF] Timeout reached ({elapsed_time/60:.2f} minutes). Stopping repair epochs early at epoch {repair_epoch + 1}/{seif_repair_epochs}, batch {batch_idx}")
+                        timeout_reached = True
+                        break
+                
                 interaction = interaction.to(self.device)
 
                 # Filter out users that have been unlearned
@@ -3491,6 +3510,10 @@ class Trainer(AbstractTrainer):
 
                 epoch_loss += loss.item()
                 batch_count += 1
+            
+            # Break from epoch loop if timeout was reached
+            if timeout_reached:
+                break
 
             # Apply final robustness noise before last epoch
             if repair_epoch == seif_repair_epochs - 2:
