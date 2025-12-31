@@ -1060,12 +1060,16 @@ def unlearn_recbole(
             with open(unlearning_samples_metadata_path, "r") as f:
                 metadata = json.load(f)
                 # Convert target items from original tokens to internal IDs
-                target_items_tokens = list(map(int, metadata["target_items"]))
+                # Handle both numeric tokens (from JSON as int) and UUID strings (from JSON as str)
+                # token2id expects string tokens, so convert to string if needed
+                target_items_tokens = metadata["target_items"]
                 target_items = []
                 for item_token in target_items_tokens:
                     try:
+                        # Convert to string if not already (handles both numeric and UUID tokens)
+                        item_token_str = str(item_token) if not isinstance(item_token, str) else item_token
                         # Convert token to internal ID using dataset's mapping
-                        item_id = dataset.token2id(iid_field, str(item_token))
+                        item_id = dataset.token2id(iid_field, item_token_str)
                         target_items.append(item_id)
                     except (ValueError, KeyError):
                         # Item not in dataset (shouldn't happen for spam items, but handle gracefully)
