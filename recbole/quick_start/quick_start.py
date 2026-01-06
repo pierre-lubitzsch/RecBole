@@ -988,6 +988,7 @@ def unlearn_recbole(
     seif_momentum=0.9,
     seif_weight_decay=5e-4,
     unlearning_batchsize=1,
+    max_training_hours=None,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -1477,6 +1478,25 @@ def unlearn_recbole(
     # Convert pairs_by_user to a list for batching
     sorted_pairs = sorted(pairs_by_user.items())
     
+    # Calculate number of batches and time limit per batch
+    # Time limit per batch = max_training_hours/num_batches hours = (max_training_hours*3600)/num_batches seconds
+    # This ensures total unlearning time is maximally max_training_hours hours
+    if batch_size > 1:
+        num_batches = (len(sorted_pairs) + batch_size - 1) // batch_size
+    else:
+        num_batches = len(sorted_pairs)
+    
+    # Time limit per batch in seconds (max_training_hours is in hours)
+    if max_training_hours is not None:
+        # Convert hours to seconds
+        max_training_hours_seconds = max_training_hours * 3600
+        time_limit_per_batch_seconds = max_training_hours_seconds / num_batches if num_batches > 0 else float('inf')
+        print(f"\nTime limit per batch: {time_limit_per_batch_seconds/3600:.2f} hours ({time_limit_per_batch_seconds:.0f} seconds)")
+        print(f"Total batches: {num_batches}, Maximum total time: {max_training_hours:.2f} hours ({max_training_hours_seconds:.0f} seconds)\n")
+    else:
+        time_limit_per_batch_seconds = None
+        print(f"\nTotal batches: {num_batches}, No time limit set\n")
+    
     # Process in batches if batch_size > 1, otherwise process one by one
     if batch_size > 1:
         # Process in batches
@@ -1588,11 +1608,12 @@ def unlearn_recbole(
             if unlearning_algorithm == "scif":
                 retain_batch_size = 16
                 samples_wanted_constant = 1024
-                retain_samples_used = 128
+                retain_samples_used = 16
+                retain_samples_used_for_update = 16 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used * forget_size,
-                    samples_wanted_constant * forget_size
+                    samples_wanted_constant
                 )
                 
                 # Cap to 10% of dataset
@@ -1602,12 +1623,14 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
+                samples_wanted_constant = 1024
                 neg_grad_retain_sample_size = 128 * forget_size
-                retain_samples_used_for_update = 32 * forget_size
+                retain_samples_used_for_update = 16 * forget_size
                 
                 total_samples_needed = max(
                     neg_grad_retain_sample_size,
-                    retain_samples_used_for_update
+                    retain_samples_used_for_update,
+                    samples_wanted_constant
                 )
                 
                 # Cap to 10% of dataset
@@ -1617,10 +1640,14 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
-                retain_samples_used_for_update = 32 * forget_size
+                samples_wanted_constant = 1024
+                retain_samples_used_for_update = 16 * forget_size
                 unlearn_iters_contrastive = 8
                 
-                total_samples_needed = retain_samples_used_for_update * unlearn_iters_contrastive
+                total_samples_needed = max(
+                    retain_samples_used_for_update * unlearn_iters_contrastive,
+                    samples_wanted_constant
+                )
                 
                 # Cap to 10% of dataset
                 total_samples_needed = min(total_samples_needed, retain_limit_absolute)
@@ -1630,7 +1657,7 @@ def unlearn_recbole(
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
                 # GIF: similar to kookmin approach
-                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 128 * forget_size
+                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 16 * forget_size
                 hessian_sample_size = 1024
                 
                 total_samples_needed = max(
@@ -1647,7 +1674,7 @@ def unlearn_recbole(
                 
                 # CEU: needs samples for Hessian computation and influence estimation
                 ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 128 * forget_size
+                retain_samples_used_for_update = 16 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1663,7 +1690,7 @@ def unlearn_recbole(
                 
                 # IDEA: needs samples for Hessian computation and gradient estimation
                 idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 128 * forget_size
+                retain_samples_used_for_update = 16 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1679,10 +1706,14 @@ def unlearn_recbole(
                 
                 # SEIF: needs samples for repair phase fine-tuning
                 # Use similar amount as other methods - enough for multiple epochs
+                samples_wanted_constant = 1024
                 seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
-                retain_samples_used_for_update = 128 * forget_size * seif_repair_epochs
+                retain_samples_used_for_update = 16 * forget_size * seif_repair_epochs
                 
-                total_samples_needed = retain_samples_used_for_update
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    samples_wanted_constant
+                )
                 
                 # Cap to 10% of dataset
                 total_samples_needed = min(total_samples_needed, retain_limit_absolute)
@@ -1753,6 +1784,8 @@ def unlearn_recbole(
                 seif_momentum=seif_momentum,
                 seif_weight_decay=seif_weight_decay,
                 original_dataset=dataset,
+                time_limit_per_batch=time_limit_per_batch_seconds,
+                retain_samples_used_for_update=retain_samples_used_for_update if unlearning_algorithm == "scif" else None,
             )
             
             request_end_time = time.time()
@@ -1863,12 +1896,13 @@ def unlearn_recbole(
             if unlearning_algorithm == "scif":
                 retain_batch_size = 16
                 samples_wanted_constant = 1024
-                retain_samples_used = 128
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
+                retain_samples_used = 16
+                retain_samples_used_for_update = 16 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used * forget_size,
-                    samples_wanted_constant * forget_size
+                    samples_wanted_constant
                 )
 
                 # Cap to 10% of dataset
@@ -1878,12 +1912,14 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
+                samples_wanted_constant = 1024
                 neg_grad_retain_sample_size = 128 * forget_size
-                retain_samples_used_for_update = 32 * forget_size
+                retain_samples_used_for_update = 16 * forget_size
 
                 total_samples_needed = max(
                     neg_grad_retain_sample_size,
-                    retain_samples_used_for_update
+                    retain_samples_used_for_update,
+                    samples_wanted_constant
                 )
 
                 # Cap to 10% of dataset
@@ -1893,10 +1929,14 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
-                retain_samples_used_for_update = 32 * forget_size
+                samples_wanted_constant = 1024
+                retain_samples_used_for_update = 16 * forget_size
                 unlearn_iters_contrastive = 8
 
-                total_samples_needed = retain_samples_used_for_update * unlearn_iters_contrastive
+                total_samples_needed = max(
+                    retain_samples_used_for_update * unlearn_iters_contrastive,
+                    samples_wanted_constant
+                )
 
                 # Cap to 10% of dataset
                 total_samples_needed = min(total_samples_needed, retain_limit_absolute)
@@ -1906,7 +1946,7 @@ def unlearn_recbole(
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
                 # GIF: similar to kookmin approach
-                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 128 * forget_size
+                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 16 * forget_size
                 hessian_sample_size = 1024
 
                 total_samples_needed = max(
@@ -1923,7 +1963,7 @@ def unlearn_recbole(
 
                 # CEU: needs samples for Hessian computation and influence estimation
                 ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 128 * forget_size
+                retain_samples_used_for_update = 16 * forget_size
 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1939,7 +1979,7 @@ def unlearn_recbole(
 
                 # IDEA: needs samples for Hessian computation and gradient estimation
                 idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 128 * forget_size
+                retain_samples_used_for_update = 16 * forget_size
 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1955,10 +1995,14 @@ def unlearn_recbole(
 
                 # SEIF: needs samples for repair phase fine-tuning
                 # Use similar amount as other methods - enough for multiple epochs
+                samples_wanted_constant = 1024
                 seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
-                retain_samples_used_for_update = 128 * forget_size * seif_repair_epochs
+                retain_samples_used_for_update = 16 * forget_size * seif_repair_epochs
 
-                total_samples_needed = retain_samples_used_for_update
+                total_samples_needed = max(
+                    retain_samples_used_for_update,
+                    samples_wanted_constant
+                )
 
                 # Cap to 10% of dataset
                 total_samples_needed = min(total_samples_needed, retain_limit_absolute)
@@ -2031,12 +2075,14 @@ def unlearn_recbole(
                 seif_momentum=seif_momentum,
                 seif_weight_decay=seif_weight_decay,
                 original_dataset=dataset,
+                time_limit_per_batch=time_limit_per_batch_seconds,
+                retain_samples_used_for_update=retain_samples_used_for_update if unlearning_algorithm == "scif" else None,
             )
 
             request_end_time = time.time()
             request_time = request_end_time - request_start_time
             unlearning_times.append(request_time)
-
+            
             print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
 
             if saved_checkpoint:

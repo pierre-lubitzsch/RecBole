@@ -506,14 +506,27 @@ class Trainer(AbstractTrainer):
         retain_samples_used_for_update=32,
         neg_grad_retain_sample_size=128,
         param_list=None,
+        time_limit_per_batch=None,
+        unlearn_start_time=None,
     ):
         self.move_optimizer_state(self.optimizer, self.device)
         self.model.train()
         loss_func = self.model.calculate_loss
+        
+        # Initialize timeout tracking
+        if unlearn_start_time is None:
+            unlearn_start_time = time()
+        
         grads_forget = []
         grads_retain = []
 
         for batch_idx, interaction in enumerate(forget_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[Kookmin] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping forget gradient computation early at batch {batch_idx + 1}/{len(forget_data)}")
+                    return
             interaction = interaction.to(self.device)
             cur_grads = self._batch_grad(
                 self.model,
@@ -531,6 +544,12 @@ class Trainer(AbstractTrainer):
         # Only process clean_forget_data if it's not None/empty
         if clean_forget_data is not None:
             for batch_idx, interaction in enumerate(clean_forget_data):
+                # Check timeout (allow at least one full batch to complete)
+                if time_limit_per_batch is not None and batch_idx > 0:
+                    elapsed_time = time() - unlearn_start_time
+                    if elapsed_time >= time_limit_per_batch:
+                        print(f"[Kookmin] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping clean forget gradient computation early at batch {batch_idx + 1}/{len(clean_forget_data)}")
+                        return
                 interaction = interaction.to(self.device)
                 cur_grads = self._batch_grad(
                     self.model,
@@ -550,6 +569,12 @@ class Trainer(AbstractTrainer):
         k_more = max(0, neg_grad_retain_sample_size - clean_forget_data_length)
 
         for batch_idx, interaction in enumerate(retain_train_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[Kookmin] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping retain gradient computation early at batch {batch_idx + 1}/{len(retain_train_data)}")
+                    return
             if k_more <= 0:
                 break
             interaction = interaction[:k_more]
@@ -804,13 +829,26 @@ class Trainer(AbstractTrainer):
         retain_samples_used_for_update=32,
         unlearn_iters_contrastive=8,
         task_type="SBR",
+        time_limit_per_batch=None,
+        unlearn_start_time=None,
     ):
         self.move_optimizer_state(self.optimizer, self.device)
         self.model.train()
 
+        # Initialize timeout tracking
+        if unlearn_start_time is None:
+            unlearn_start_time = time()
+        
         # First stage: learn uniform pseudolabel
         losses = []
         for batch_idx, interaction in enumerate(forget_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[Fanchuan] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping uniform pseudolabel learning early at batch {batch_idx + 1}/{len(forget_data)}")
+                    return
+            
             interaction = interaction.to(self.device)
             loss = self.unlearn_iterative_uniform_distribution(interaction, self.model, task_type=task_type)
             losses.append(loss)
@@ -833,6 +871,13 @@ class Trainer(AbstractTrainer):
 
         # Second stage: Contrastive learning between forget and retain data
         for j in range(unlearn_iters_contrastive):
+            # Check timeout before starting iteration (allow at least one full iteration to complete)
+            if time_limit_per_batch is not None and j > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[Fanchuan] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping contrastive learning early at iteration {j + 1}/{unlearn_iters_contrastive}")
+                    return
+            
             losses = []
 
             first_round_start_time = time()
@@ -845,6 +890,12 @@ class Trainer(AbstractTrainer):
                 print(f"[Fanchuan] Warning: clean_forget_data is empty, skipping clean contrastive loss")
 
             for batch_idx, forget_interaction in enumerate(forget_data):
+                # Check timeout during batch processing (allow at least one full batch to complete)
+                if time_limit_per_batch is not None and batch_idx > 0:
+                    elapsed_time = time() - unlearn_start_time
+                    if elapsed_time >= time_limit_per_batch:
+                        print(f"[Fanchuan] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping contrastive learning early at iteration {j + 1}/{unlearn_iters_contrastive}, batch {batch_idx + 1}/{len(forget_data)}")
+                        return
                 # Get retain interaction using pre-computed indices
                 start_idx = iter_offset + batch_idx * batch_size
                 end_idx = start_idx + batch_size
@@ -876,7 +927,14 @@ class Trainer(AbstractTrainer):
             # retain round - use efficient shuffling
             second_round_start_time = time()
             
-            for epoch_idx_inner in range(epochs):               
+            for epoch_idx_inner in range(epochs):
+                # Check timeout before each epoch (allow at least one full epoch to complete)
+                if time_limit_per_batch is not None and epoch_idx_inner > 0:
+                    elapsed_time = time() - unlearn_start_time
+                    if elapsed_time >= time_limit_per_batch:
+                        print(f"[Fanchuan] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping retain round early at iteration {j + 1}/{unlearn_iters_contrastive}, epoch {epoch_idx_inner + 1}/{epochs}")
+                        return
+               
                 training_start_time = time()
                 train_loss = self._train_epoch_efficient_shuffle(
                     retain_train_data, epoch_idx_inner, 
@@ -1395,6 +1453,8 @@ class Trainer(AbstractTrainer):
         max_norm=None,
         param_list=None,
         original_dataset=None,
+        time_limit_per_batch=None,
+        unlearn_start_time=None,
     ):
         """
         GIF: Graph Influence Function for Graph Neural Network Unlearning
@@ -1433,10 +1493,20 @@ class Trainer(AbstractTrainer):
         if param_list is None:
             param_list = self.target_params(self.model)
 
+        # Initialize timeout tracking
+        if unlearn_start_time is None:
+            unlearn_start_time = time()
+
         # Step 1: Compute gradients for forget data (nodes to unlearn)
         print(f"[GIF] Step 1: Computing gradients for forget data ({len(forget_data.dataset)} samples)...")
         grads_forget_original = []
         for batch_idx, interaction in enumerate(forget_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[GIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping forget gradient computation early at batch {batch_idx + 1}/{len(forget_data)}")
+                    return
             interaction = interaction.to(self.device)
             cur_grads = self._batch_grad(
                 self.model,
@@ -1558,7 +1628,13 @@ class Trainer(AbstractTrainer):
         print(f"[GIF] Computing gradients on k-hop neighbors with ORIGINAL graph...")
         influenced_count = len(k_hop_batches) if k_hop_batches else 1
 
-        for batch in k_hop_batches:
+        for batch_idx, batch in enumerate(k_hop_batches):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[GIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping k-hop gradient computation early at batch {batch_idx + 1}/{len(k_hop_batches)}")
+                    return
             batch = batch.to(self.device)
 
             # Gradient with ORIGINAL graph (before unlearning, forget edges still present)
@@ -1597,7 +1673,13 @@ class Trainer(AbstractTrainer):
             with self._temporarily_replace_graph(self.model, graph_attr_name, modified_adj_matrix):
                 # Compute gradients on remaining graph (WITHOUT forget edges)
                 # This corresponds to ∇L_N_G' in the paper
-                for batch in k_hop_batches:
+                for batch_idx, batch in enumerate(k_hop_batches):
+                    # Check timeout (allow at least one full batch to complete)
+                    if time_limit_per_batch is not None and batch_idx > 0:
+                        elapsed_time = time() - unlearn_start_time
+                        if elapsed_time >= time_limit_per_batch:
+                            print(f"[GIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping remaining graph gradient computation early at batch {batch_idx + 1}/{len(k_hop_batches)}")
+                            return
                     batch = batch.to(self.device)
 
                     cur_grads_remaining = self._batch_grad(
@@ -1617,7 +1699,13 @@ class Trainer(AbstractTrainer):
             print(f"[GIF] Model has no graph structure. Computing gradients normally...")
             # For models without graph structure (e.g., BPR), compute normally
             # Since there's no graph, the "remaining" is the same as using current embeddings
-            for batch in k_hop_batches:
+            for batch_idx, batch in enumerate(k_hop_batches):
+                # Check timeout (allow at least one full batch to complete)
+                if time_limit_per_batch is not None and batch_idx > 0:
+                    elapsed_time = time() - unlearn_start_time
+                    if elapsed_time >= time_limit_per_batch:
+                        print(f"[GIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping gradient computation early at batch {batch_idx + 1}/{len(k_hop_batches)}")
+                        return
                 batch = batch.to(self.device)
 
                 cur_grads_remaining = self._batch_grad(
@@ -1657,6 +1745,12 @@ class Trainer(AbstractTrainer):
         sample_count = 0
 
         for batch_idx, interaction in enumerate(retain_train_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[GIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping Hessian sample collection early at batch {batch_idx + 1}/{len(retain_train_data)}")
+                    return
             if sample_count >= hessian_sample_size:
                 break
             batch_size = min(len(interaction), hessian_sample_size - sample_count)
@@ -1711,6 +1805,12 @@ class Trainer(AbstractTrainer):
 
         prev_diff = None
         for iteration in range(gif_iterations):
+            # Check timeout (allow at least one full iteration to complete)
+            if time_limit_per_batch is not None and iteration > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[GIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping Hessian inverse approximation early at iteration {iteration + 1}/{gif_iterations}")
+                    return
             # Compute H * H^{-1}_{t-1} * v
             h_times_h_inv_v = compute_hvp(h_inv_v)
 
@@ -1851,6 +1951,8 @@ class Trainer(AbstractTrainer):
         max_norm=None,
         param_list=None,
         original_dataset=None,
+        time_limit_per_batch=None,
+        unlearn_start_time=None,
     ):
         """
         CEU: Certified Edge Unlearning for Graph Neural Networks
@@ -1891,6 +1993,10 @@ class Trainer(AbstractTrainer):
         if param_list is None:
             param_list = self.target_params(self.model)
 
+        # Initialize timeout tracking
+        if unlearn_start_time is None:
+            unlearn_start_time = time()
+
         # Step 1: Compute gradients for nodes affected by edge removal
         # V_E_UL includes all nodes in the neighborhood of removed edges
         print(f"[CEU] Step 1: Computing gradients for affected nodes...")
@@ -1898,6 +2004,12 @@ class Trainer(AbstractTrainer):
         # Gradients on original graph (with removed edges)
         grads_forget_on_original = []
         for batch_idx, interaction in enumerate(forget_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[CEU] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping forget gradient computation early at batch {batch_idx + 1}/{len(forget_data)}")
+                    return
             interaction = interaction.to(self.device)
             cur_grads = self._batch_grad(
                 self.model,
@@ -2162,6 +2274,12 @@ class Trainer(AbstractTrainer):
         rs_old = sum((r_i * r_i).sum() for r_i in r)
 
         for iteration in range(ceu_cg_iterations):
+            # Check timeout (allow at least one full iteration to complete)
+            if time_limit_per_batch is not None and iteration > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[CEU] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping CG iterations early at iteration {iteration + 1}/{ceu_cg_iterations}")
+                    return
             # Compute Ap
             Ap = compute_hvp(p)
 
@@ -2304,6 +2422,8 @@ class Trainer(AbstractTrainer):
         max_norm=None,
         param_list=None,
         original_dataset=None,
+        time_limit_per_batch=None,
+        unlearn_start_time=None,
     ):
         """
         IDEA: A Flexible Framework of Certified Unlearning for Graph Neural Networks
@@ -2347,6 +2467,10 @@ class Trainer(AbstractTrainer):
         if param_list is None:
             param_list = [p for p in self.model.parameters() if p.requires_grad]
 
+        # Initialize timeout tracking
+        if unlearn_start_time is None:
+            unlearn_start_time = time()
+
         # Step 1: Compute gradient differences (Ladd - Lsub) for forget data
         # This represents the gradient of the additional term in Equation (3)
         print(f"[IDEA] Step 1: Computing gradient differences for forget data...")
@@ -2355,7 +2479,13 @@ class Trainer(AbstractTrainer):
         forget_grads = []
         self.model.zero_grad()
 
-        for batch in forget_data:
+        for batch_idx, batch in enumerate(forget_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[IDEA] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping forget gradient computation early at batch {batch_idx + 1}/{len(forget_data)}")
+                    return
             batch = batch.to(self.device)
             loss = loss_func(batch)
             loss.backward()
@@ -2378,7 +2508,13 @@ class Trainer(AbstractTrainer):
         if clean_forget_data is not None and len(clean_forget_data) > 0:
             self.model.zero_grad()
 
-            for batch in clean_forget_data:
+            for batch_idx, batch in enumerate(clean_forget_data):
+                # Check timeout (allow at least one full batch to complete)
+                if time_limit_per_batch is not None and batch_idx > 0:
+                    elapsed_time = time() - unlearn_start_time
+                    if elapsed_time >= time_limit_per_batch:
+                        print(f"[IDEA] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping clean forget gradient computation early at batch {batch_idx + 1}/{len(clean_forget_data)}")
+                        return
                 batch = batch.to(self.device)
                 loss = loss_func(batch)
                 loss.backward()
@@ -2523,6 +2659,12 @@ class Trainer(AbstractTrainer):
         rs_old = sum((r_i * r_i).sum() for r_i in r)
 
         for iteration in range(idea_iterations):
+            # Check timeout (allow at least one full iteration to complete)
+            if time_limit_per_batch is not None and iteration > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[IDEA] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping iterations early at iteration {iteration + 1}/{idea_iterations}")
+                    return
             # Compute Ap = (H + damping*I) * p
             Ap = compute_hvp_with_damping(p)
 
@@ -2956,6 +3098,8 @@ class Trainer(AbstractTrainer):
         max_norm=None,
         unlearned_users_before=None,
         damping=0.01,
+        time_limit_per_batch=None,
+        unlearn_start_time=None,
     ):
 
         # r"""Train the model in an epoch
@@ -2994,6 +3138,10 @@ class Trainer(AbstractTrainer):
 
         param_list = self.target_params(self.model)
 
+        # Initialize timeout tracking
+        if unlearn_start_time is None:
+            unlearn_start_time = time()
+
         neg_grads = None
         pos_grads = None
 
@@ -3006,6 +3154,12 @@ class Trainer(AbstractTrainer):
         
         # calculate grads for forget data which we want to forget
         for batch_idx, interaction in enumerate(forget_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[SCIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping gradient computation early at batch {batch_idx + 1}/{len(forget_data)}")
+                    return
             interaction = interaction.to(self.device)
             cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
             if neg_grads is None:
@@ -3018,6 +3172,12 @@ class Trainer(AbstractTrainer):
         clean_forget_data_size = 0
         if clean_forget_data is not None:
             for batch_idx, interaction in enumerate(clean_forget_data):
+                # Check timeout (allow at least one full batch to complete)
+                if time_limit_per_batch is not None and batch_idx > 0:
+                    elapsed_time = time() - unlearn_start_time
+                    if elapsed_time >= time_limit_per_batch:
+                        print(f"[SCIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping clean forget gradient computation early at batch {batch_idx + 1}/{len(clean_forget_data)}")
+                        return
                 clean_forget_data_size += len(interaction)
                 interaction = interaction.to(self.device)
                 cur_grads = self._batch_grad(self.model, interaction, param_list, loss_func, average_scale=retain_count)
@@ -3030,6 +3190,12 @@ class Trainer(AbstractTrainer):
         
         # get retain grads from the retain data to prevent catastrophic forgetting
         for batch_idx, interaction in enumerate(retain_train_data):
+            # Check timeout (allow at least one full batch to complete)
+            if time_limit_per_batch is not None and batch_idx > 0:
+                elapsed_time = time() - unlearn_start_time
+                if elapsed_time >= time_limit_per_batch:
+                    print(f"[SCIF] Timeout reached ({elapsed_time/3600:.2f} hours). Stopping retain gradient computation early at batch {batch_idx + 1}/{len(retain_train_data)}")
+                    return
             if retain_count <= 0:
                 break
             interaction = interaction.to(self.device)
@@ -3052,6 +3218,13 @@ class Trainer(AbstractTrainer):
         if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
             self.logger.warning("[SCIF] NaN or Inf detected in gradient computation before CG solver")
             return
+
+        # Check timeout before CG solver
+        if time_limit_per_batch is not None:
+            elapsed_time = time() - unlearn_start_time
+            if elapsed_time >= time_limit_per_batch:
+                print(f"[SCIF] Timeout reached ({elapsed_time/3600:.2f} hours). Skipping CG solver.")
+                return
 
         inv_hvp, cg_converged = self.cg_inv_hvp(
             self.model,
@@ -3354,6 +3527,8 @@ class Trainer(AbstractTrainer):
         seif_weight_decay=5e-4,
         max_norm=None,
         param_list=None,
+        time_limit_per_batch=None,
+        unlearn_start_time=None,
     ):
         """
         SEIF: Self-Influence Guided Data Attribution for Unlearning
@@ -3420,9 +3595,12 @@ class Trainer(AbstractTrainer):
         # PHASE 2: REPAIR - Fine-tune on retain set with weighted loss
         print(f"[SEIF] Phase 2: Repair - Fine-tuning on retain set for {seif_repair_epochs} epochs...")
 
-        # Track start time for timeout check (10 minutes = 600 seconds)
-        repair_start_time = time()
-        timeout_seconds = 10 * 60  # 10 minutes
+        # Track start time for timeout check
+        if unlearn_start_time is None:
+            unlearn_start_time = time()
+        repair_start_time = unlearn_start_time
+        # Use passed time limit if available, otherwise default to 10 minutes
+        timeout_seconds = time_limit_per_batch if time_limit_per_batch is not None else (10 * 60)
 
         # Temporarily save original learning rate
         original_lr = self.optimizer.param_groups[0]['lr']
@@ -3582,6 +3760,8 @@ class Trainer(AbstractTrainer):
         seif_weight_decay=5e-4,
         original_dataset=None,
         unlearning_batchsize=None,
+        time_limit_per_batch=None,
+        retain_samples_used_for_update=None,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -3608,7 +3788,14 @@ class Trainer(AbstractTrainer):
 
         # for epoch_idx in range(self.start_epoch, self.epochs):
         #     # unlearn 1 epoch
+        # Track start time for timeout checking
+        unlearn_start_time = time()
+        if time_limit_per_batch is not None:
+            print(f"[Unlearn] Time limit per batch: {time_limit_per_batch/3600:.2f} hours ({time_limit_per_batch:.0f} seconds)")
+        
         if unlearning_algorithm == "scif":
+            if retain_samples_used_for_update is None:
+                retain_samples_used_for_update = 16 * len(forget_data.dataset)
             self.scif(
                 epoch_idx,
                 forget_data,
@@ -3620,9 +3807,12 @@ class Trainer(AbstractTrainer):
                 max_norm=max_norm,
                 unlearned_users_before=unlearned_users_before,
                 damping=damping,
+                time_limit_per_batch=time_limit_per_batch,
+                unlearn_start_time=unlearn_start_time,
+                retain_samples_used_for_update=retain_samples_used_for_update,
             )
         elif unlearning_algorithm == "kookmin":
-            retain_samples_used_for_update = 32 * len(forget_data.dataset)
+            retain_samples_used_for_update = 16 * len(forget_data.dataset)
             neg_grad_retain_sample_size = 128 * len(forget_data.dataset)
             param_list = [p for _, p in self.model.named_parameters()]
             self.kookmin(
@@ -3638,9 +3828,11 @@ class Trainer(AbstractTrainer):
                 retain_samples_used_for_update=retain_samples_used_for_update,
                 neg_grad_retain_sample_size=neg_grad_retain_sample_size,
                 param_list=param_list,
+                time_limit_per_batch=time_limit_per_batch,
+                unlearn_start_time=unlearn_start_time,
             )
         elif unlearning_algorithm == "fanchuan":
-            retain_samples_used_for_update = 32 * len(forget_data.dataset)
+            retain_samples_used_for_update = 16 * len(forget_data.dataset)
             self.fanchuan(
                 epoch_idx,
                 forget_data,
@@ -3654,6 +3846,8 @@ class Trainer(AbstractTrainer):
                 verbose=verbose,
                 retain_samples_used_for_update=retain_samples_used_for_update,
                 task_type=task_type,
+                time_limit_per_batch=time_limit_per_batch,
+                unlearn_start_time=unlearn_start_time,
             )
         elif unlearning_algorithm == "gif":
             # GIF: Graph Influence Function
@@ -3670,7 +3864,7 @@ class Trainer(AbstractTrainer):
                 unlearned_users_before=unlearned_users_before,
                 saved=saved,
                 verbose=verbose,
-                retain_samples_used_for_update=self.config["gif_retain_samples"] if "gif_retain_samples" in self.config and self.config["gif_retain_samples"] is not None else 128 * len(forget_data.dataset),
+                retain_samples_used_for_update=self.config["gif_retain_samples"] if "gif_retain_samples" in self.config and self.config["gif_retain_samples"] is not None else 16 * len(forget_data.dataset),
                 gif_damping=self.config["gif_damping"] if "gif_damping" in self.config and self.config["gif_damping"] is not None else 0.01,
                 gif_scale_factor=self.config["gif_scale_factor"] if "gif_scale_factor" in self.config and self.config["gif_scale_factor"] is not None else 1000,
                 gif_iterations=self.config["gif_iterations"] if "gif_iterations" in self.config and self.config["gif_iterations"] is not None else 100,
@@ -3679,6 +3873,8 @@ class Trainer(AbstractTrainer):
                 max_norm=max_norm,
                 param_list=param_list,
                 original_dataset=original_dataset,
+                time_limit_per_batch=time_limit_per_batch,
+                unlearn_start_time=unlearn_start_time,
             )
         elif unlearning_algorithm == "ceu":
             # CEU: Certified Edge Unlearning
@@ -3705,6 +3901,8 @@ class Trainer(AbstractTrainer):
                 max_norm=max_norm,
                 param_list=param_list,
                 original_dataset=original_dataset,
+                time_limit_per_batch=time_limit_per_batch,
+                unlearn_start_time=unlearn_start_time,
             )
         elif unlearning_algorithm == "idea":
             # IDEA: Flexible Framework of Certified Unlearning for GNNs
@@ -3732,6 +3930,8 @@ class Trainer(AbstractTrainer):
                 max_norm=max_norm,
                 param_list=param_list,
                 original_dataset=original_dataset,
+                time_limit_per_batch=time_limit_per_batch,
+                unlearn_start_time=unlearn_start_time,
             )
         elif unlearning_algorithm == "seif":
             # SEIF: Self-Influence Guided Data Attribution
@@ -3757,7 +3957,21 @@ class Trainer(AbstractTrainer):
                 seif_weight_decay=self.config["seif_weight_decay"] if "seif_weight_decay" in self.config and self.config["seif_weight_decay"] is not None else 5e-4,
                 max_norm=max_norm,
                 param_list=param_list,
+                time_limit_per_batch=time_limit_per_batch,
+                unlearn_start_time=unlearn_start_time,
             )
+
+        # Report elapsed time
+        unlearn_end_time = time()
+        elapsed_time = unlearn_end_time - unlearn_start_time
+        if time_limit_per_batch is not None:
+            remaining_time = time_limit_per_batch - elapsed_time
+            if remaining_time < 0:
+                print(f"[Unlearn] WARNING: Exceeded time limit by {abs(remaining_time)/3600:.2f} hours")
+            else:
+                print(f"[Unlearn] Elapsed time: {elapsed_time/3600:.2f} hours, Remaining: {remaining_time/3600:.2f} hours")
+        else:
+            print(f"[Unlearn] Elapsed time: {elapsed_time/3600:.2f} hours")
 
         if saved:
             # Only include batchsize in filename if explicitly set and != 1 (for hyperparameter tests)

@@ -149,6 +149,12 @@ def main():
         default=1,
         help="number of users to unlearn in a single batch (default: 1 for sequential processing)"
     )
+    parser.add_argument(
+        "--max_training_hours",
+        type=float,
+        default=None,
+        help="maximum total time for unlearning in hours (default: None for no time limit). Time limit per batch = max_training_hours / num_batches"
+    )
 
     # SCIF-specific parameters
     parser.add_argument(
@@ -527,6 +533,7 @@ def main():
         seif_learning_rate=args.seif_learning_rate,
         seif_momentum=args.seif_momentum,
         seif_weight_decay=args.seif_weight_decay,
+        max_training_hours=args.max_training_hours,
     )
 
 if __name__ == "__main__":
