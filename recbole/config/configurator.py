@@ -509,11 +509,11 @@ class Config(object):
                 + ":"
                 + str(self.final_config_dict["port"]),
             )
-            self.final_config_dict["device"] = torch.device(
-                "cuda", self.final_config_dict["local_rank"]
-            )
-            self.final_config_dict["single_spec"] = False
+            # Set the actual CUDA device for this process
             torch.cuda.set_device(self.final_config_dict["local_rank"])
+            # Use "cuda" without index - torch.cuda.set_device() handles the device selection
+            self.final_config_dict["device"] = torch.device("cuda")
+            self.final_config_dict["single_spec"] = False
             if self.final_config_dict["local_rank"] != 0:
                 self.final_config_dict["state"] = "error"
                 self.final_config_dict["show_progress"] = False
