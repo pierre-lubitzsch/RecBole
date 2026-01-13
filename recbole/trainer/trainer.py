@@ -702,19 +702,32 @@ class Trainer(AbstractTrainer):
         return loss.item()
     
     def get_embedding_for_contrastive_learning(self, interaction, model):
-        if hasattr(model, 'ITEM_SEQ') and hasattr(model, 'ITEM_SEQ_LEN'): # SBR
-            item_seq = interaction[model.ITEM_SEQ]
-            item_seq_len = interaction[model.ITEM_SEQ_LEN]
-            
-            # forward returns sequence (session) representation
-            seq_output = model.forward(item_seq, item_seq_len)
-            return seq_output
+        # Check for NBR models first (they inherit ITEM_SEQ from SequentialRecommender but don't use it)
+        if hasattr(model, "history_items_field"): # NBR (Next Basket Recommendation)
+            # For NBR models like DNNTSP, extract basket/user embedding representation
+            # This is better than using full output scores for contrastive learning
+            if hasattr(model, "get_basket_embedding"):
+                basket_emb = model.get_basket_embedding(interaction)
+                return basket_emb
+            else:
+                # Fallback: use forward output (less ideal but works)
+                output = model.forward(interaction)
+                return output
+        elif hasattr(model, 'ITEM_SEQ') and hasattr(model, 'ITEM_SEQ_LEN'): # SBR
+            # Check if ITEM_SEQ actually exists in the interaction (to distinguish from NBR models)
+            if model.ITEM_SEQ in interaction:
+                item_seq = interaction[model.ITEM_SEQ]
+                item_seq_len = interaction[model.ITEM_SEQ_LEN]
+                
+                # forward returns sequence (session) representation
+                seq_output = model.forward(item_seq, item_seq_len)
+                return seq_output
         elif hasattr(model, "user_embedding"): # CF
             user = interaction[model.USER_ID]
             user_e = model.user_embedding(user)
             return user_e
-        else:
-            raise ValueError(f"Model {model} is not supported, specify here which layer to take for contrastive learning.")
+        
+        raise ValueError(f"Model {model} is not supported, specify here which layer to take for contrastive learning.")
 
 
     def unlearn_iterative_contrastive(self, unlearn_interaction, retain_interaction, model):

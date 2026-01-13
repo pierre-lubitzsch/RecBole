@@ -761,4 +761,51 @@ class DNNTSP(SequentialRecommender):
         """
         output = self.forward(interaction)  # [batch_size, n_items]
         return output
+    
+    def get_basket_embedding(self, interaction):
+        """
+        Extract basket/user embedding representation for contrastive learning.
+        
+        This extracts the aggregated item embeddings before the final FC layer,
+        representing the user's basket history.
+        
+        Args:
+            interaction: Interaction object from NextBasketDataset
+            
+        Returns:
+            basket_emb: [batch_size, item_embed_dim] - basket representation
+        """
+        # Transform interaction to graph format
+        (graph, nodes_feature, edges_weight, lengths, nodes, users_frequency
+         ) = self._transform_interaction_to_graphs(interaction)
+        
+        # Perform weighted GCN on dynamic graphs
+        nodes_output = self.stacked_gcn(graph.edge_index, nodes_feature, edges_weight)
+        
+        # Self-attention in time dimension
+        nodes_output = self.masked_self_attention(nodes_output)
+        
+        # Aggregate node features in temporal dimension
+        nodes_output = self.aggregate_nodes_temporal_feature(graph, lengths, nodes_output)
+        
+        # Get item embeddings after global gated update: [batch_size, items_total, item_embed_dim]
+        item_embeddings = self.global_gated_update(graph, nodes, nodes_output)
+        
+        # Aggregate item embeddings to get basket representation
+        # Use mean pooling over items that appear in user's history (non-zero frequency)
+        # users_frequency: [batch_size, items_total] - indicates which items appear
+        item_mask = (users_frequency > 0).float()  # [batch_size, items_total]
+        
+        # Weighted mean: sum embeddings weighted by frequency, then normalize
+        # item_embeddings: [batch_size, items_total, item_embed_dim]
+        # users_frequency: [batch_size, items_total, 1] after unsqueeze
+        weighted_emb = item_embeddings * users_frequency.unsqueeze(-1)  # [batch_size, items_total, item_embed_dim]
+        basket_emb = weighted_emb.sum(dim=1)  # [batch_size, item_embed_dim]
+        
+        # Normalize by sum of frequencies (avoid division by zero)
+        freq_sum = users_frequency.sum(dim=1, keepdim=True)  # [batch_size, 1]
+        freq_sum = torch.clamp(freq_sum, min=1e-8)  # Avoid division by zero
+        basket_emb = basket_emb / freq_sum
+        
+        return basket_emb
 
