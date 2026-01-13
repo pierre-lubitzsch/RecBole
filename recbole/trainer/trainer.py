@@ -4293,8 +4293,8 @@ class SRGNNTrainer(Trainer):
             gamma=0.1
         )
 
-    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
-        loss = super()._train_epoch(train_data, epoch_idx, loss_func=loss_func, show_progress=show_progress)
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
+        loss = super()._train_epoch(train_data, epoch_idx, loss_func=loss_func, show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update, reinit_masks=reinit_masks, scale_for_reinit_params=scale_for_reinit_params)
         self.scheduler.step()
         return loss
 
@@ -4311,7 +4311,7 @@ class KGTrainer(Trainer):
         self.train_rec_step = config["train_rec_step"]
         self.train_kg_step = config["train_kg_step"]
 
-    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
         if self.train_rec_step is None or self.train_kg_step is None:
             interaction_state = KGDataLoaderState.RSKG
         elif (
@@ -4325,7 +4325,7 @@ class KGTrainer(Trainer):
         train_data.set_mode(interaction_state)
         if interaction_state in [KGDataLoaderState.RSKG, KGDataLoaderState.RS]:
             return super()._train_epoch(
-                train_data, epoch_idx, show_progress=show_progress
+                train_data, epoch_idx, show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update, reinit_masks=reinit_masks, scale_for_reinit_params=scale_for_reinit_params
             )
         elif interaction_state in [KGDataLoaderState.KG]:
             return super()._train_epoch(
@@ -4333,6 +4333,9 @@ class KGTrainer(Trainer):
                 epoch_idx,
                 loss_func=self.model.calculate_kg_loss,
                 show_progress=show_progress,
+                retain_samples_used_for_update=retain_samples_used_for_update,
+                reinit_masks=reinit_masks,
+                scale_for_reinit_params=scale_for_reinit_params,
             )
         return None
 
@@ -4343,13 +4346,13 @@ class KGATTrainer(Trainer):
     def __init__(self, config, model):
         super(KGATTrainer, self).__init__(config, model)
 
-    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
         # train rs
         if not self.config["single_spec"]:
             train_data.knowledge_shuffle(epoch_idx)
         train_data.set_mode(KGDataLoaderState.RS)
         rs_total_loss = super()._train_epoch(
-            train_data, epoch_idx, show_progress=show_progress
+            train_data, epoch_idx, show_progress=show_progress, retain_samples_used_for_update=retain_samples_used_for_update, reinit_masks=reinit_masks, scale_for_reinit_params=scale_for_reinit_params
         )
 
         # train kg
@@ -4359,6 +4362,9 @@ class KGATTrainer(Trainer):
             epoch_idx,
             loss_func=self.model.calculate_kg_loss,
             show_progress=show_progress,
+            retain_samples_used_for_update=retain_samples_used_for_update,
+            reinit_masks=reinit_masks,
+            scale_for_reinit_params=scale_for_reinit_params,
         )
 
         # update A
@@ -4469,7 +4475,7 @@ class MKRTrainer(Trainer):
         super(MKRTrainer, self).__init__(config, model)
         self.kge_interval = config["kge_interval"]
 
-    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
         rs_total_loss, kg_total_loss = 0.0, 0.0
 
         # train rs
@@ -4480,6 +4486,9 @@ class MKRTrainer(Trainer):
             epoch_idx,
             loss_func=self.model.calculate_rs_loss,
             show_progress=show_progress,
+            retain_samples_used_for_update=retain_samples_used_for_update,
+            reinit_masks=reinit_masks,
+            scale_for_reinit_params=scale_for_reinit_params,
         )
 
         # train kg
@@ -4491,6 +4500,9 @@ class MKRTrainer(Trainer):
                 epoch_idx,
                 loss_func=self.model.calculate_kg_loss,
                 show_progress=show_progress,
+                retain_samples_used_for_update=retain_samples_used_for_update,
+                reinit_masks=reinit_masks,
+                scale_for_reinit_params=scale_for_reinit_params,
             )
 
         return rs_total_loss, kg_total_loss
@@ -4882,7 +4894,7 @@ class RecVAETrainer(Trainer):
             params=self.model.decoder.parameters()
         )
 
-    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
         self.optimizer = self.optimizer_encoder
         encoder_loss_func = lambda data: self.model.calculate_loss(
             data, encoder_flag=True
@@ -4893,6 +4905,9 @@ class RecVAETrainer(Trainer):
                 epoch_idx,
                 loss_func=encoder_loss_func,
                 show_progress=show_progress,
+                retain_samples_used_for_update=retain_samples_used_for_update,
+                reinit_masks=reinit_masks,
+                scale_for_reinit_params=scale_for_reinit_params,
             )
 
         self.model.update_prior()
@@ -4907,6 +4922,9 @@ class RecVAETrainer(Trainer):
                 epoch_idx,
                 loss_func=decoder_loss_func,
                 show_progress=show_progress,
+                retain_samples_used_for_update=retain_samples_used_for_update,
+                reinit_masks=reinit_masks,
+                scale_for_reinit_params=scale_for_reinit_params,
             )
         return loss
 
@@ -5038,7 +5056,7 @@ class NCLTrainer(Trainer):
         self._add_hparam_to_tensorboard(self.best_valid_score)
         return self.best_valid_score, self.best_valid_result
 
-    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False):
+    def _train_epoch(self, train_data, epoch_idx, loss_func=None, show_progress=False, retain_samples_used_for_update=None, reinit_masks=None, scale_for_reinit_params=1.0):
         r"""Train the model in an epoch
         Args:
             train_data (DataLoader): The train data.
@@ -5046,6 +5064,9 @@ class NCLTrainer(Trainer):
             loss_func (function): The loss function of :attr:`model`. If it is ``None``, the loss function will be
                 :attr:`self.model.calculate_loss`. Defaults to ``None``.
             show_progress (bool): Show the progress of training epoch. Defaults to ``False``.
+            retain_samples_used_for_update (int, optional): Number of retain samples to use for update. Defaults to ``None``.
+            reinit_masks (dict, optional): Masks for parameter reinitialization. Defaults to ``None``.
+            scale_for_reinit_params (float, optional): Scale factor for reinitialized parameters. Defaults to ``1.0``.
         Returns:
             float/tuple: The sum of loss returned by all batches in this epoch. If the loss in each batch contains
             multiple parts and the model return these multiple parts loss instead of the sum of loss, it will return a
