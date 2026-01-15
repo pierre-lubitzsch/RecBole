@@ -1607,7 +1607,7 @@ def unlearn_recbole(
             
             if unlearning_algorithm == "scif":
                 retain_batch_size = 16
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 retain_samples_used = 16
                 retain_samples_used_for_update = 16 * forget_size
                 
@@ -1623,7 +1623,7 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 neg_grad_retain_sample_size = 128 * forget_size
                 retain_samples_used_for_update = 16 * forget_size
                 
@@ -1640,7 +1640,7 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 retain_samples_used_for_update = 16 * forget_size
                 unlearn_iters_contrastive = 8
                 
@@ -1706,7 +1706,7 @@ def unlearn_recbole(
                 
                 # SEIF: needs samples for repair phase fine-tuning
                 # Use similar amount as other methods - enough for multiple epochs
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
                 retain_samples_used_for_update = 16 * forget_size * seif_repair_epochs
                 
@@ -1895,7 +1895,7 @@ def unlearn_recbole(
 
             if unlearning_algorithm == "scif":
                 retain_batch_size = 16
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 retain_samples_used = 16
                 retain_samples_used_for_update = 16 * forget_size
@@ -1912,7 +1912,7 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 neg_grad_retain_sample_size = 128 * forget_size
                 retain_samples_used_for_update = 16 * forget_size
 
@@ -1929,7 +1929,7 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 retain_samples_used_for_update = 16 * forget_size
                 unlearn_iters_contrastive = 8
 
@@ -1995,7 +1995,7 @@ def unlearn_recbole(
 
                 # SEIF: needs samples for repair phase fine-tuning
                 # Use similar amount as other methods - enough for multiple epochs
-                samples_wanted_constant = 1024
+                samples_wanted_constant = 256
                 seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
                 retain_samples_used_for_update = 16 * forget_size * seif_repair_epochs
 
