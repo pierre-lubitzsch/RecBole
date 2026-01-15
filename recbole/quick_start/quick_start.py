@@ -1607,9 +1607,9 @@ def unlearn_recbole(
             
             if unlearning_algorithm == "scif":
                 retain_batch_size = 16
-                samples_wanted_constant = 256
-                retain_samples_used = 16
-                retain_samples_used_for_update = 16 * forget_size
+                samples_wanted_constant = 32
+                retain_samples_used = 8
+                retain_samples_used_for_update = 8 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used * forget_size,
@@ -1623,9 +1623,9 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
-                samples_wanted_constant = 256
-                neg_grad_retain_sample_size = 128 * forget_size
-                retain_samples_used_for_update = 16 * forget_size
+                samples_wanted_constant = 32
+                neg_grad_retain_sample_size = 8 * forget_size
+                retain_samples_used_for_update = 8 * forget_size
                 
                 total_samples_needed = max(
                     neg_grad_retain_sample_size,
@@ -1640,8 +1640,8 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
-                samples_wanted_constant = 256
-                retain_samples_used_for_update = 16 * forget_size
+                samples_wanted_constant = 32
+                retain_samples_used_for_update = 8 * forget_size
                 unlearn_iters_contrastive = 8
                 
                 total_samples_needed = max(
@@ -1657,7 +1657,7 @@ def unlearn_recbole(
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
                 
                 # GIF: similar to kookmin approach
-                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 16 * forget_size
+                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 8 * forget_size
                 hessian_sample_size = 1024
                 
                 total_samples_needed = max(
@@ -1674,7 +1674,7 @@ def unlearn_recbole(
                 
                 # CEU: needs samples for Hessian computation and influence estimation
                 ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 16 * forget_size
+                retain_samples_used_for_update = 8 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1690,7 +1690,7 @@ def unlearn_recbole(
                 
                 # IDEA: needs samples for Hessian computation and gradient estimation
                 idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 16 * forget_size
+                retain_samples_used_for_update = 8 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1706,9 +1706,9 @@ def unlearn_recbole(
                 
                 # SEIF: needs samples for repair phase fine-tuning
                 # Use similar amount as other methods - enough for multiple epochs
-                samples_wanted_constant = 256
+                samples_wanted_constant = 32
                 seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
-                retain_samples_used_for_update = 16 * forget_size * seif_repair_epochs
+                retain_samples_used_for_update = 8 * forget_size * seif_repair_epochs
                 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1895,10 +1895,10 @@ def unlearn_recbole(
 
             if unlearning_algorithm == "scif":
                 retain_batch_size = 16
-                samples_wanted_constant = 256
+                samples_wanted_constant = 32
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
-                retain_samples_used = 16
-                retain_samples_used_for_update = 16 * forget_size
+                retain_samples_used = 8
+                retain_samples_used_for_update = 8 * forget_size
                 
                 total_samples_needed = max(
                     retain_samples_used * forget_size,
@@ -1912,9 +1912,9 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
-                samples_wanted_constant = 256
-                neg_grad_retain_sample_size = 128 * forget_size
-                retain_samples_used_for_update = 16 * forget_size
+                samples_wanted_constant = 32
+                neg_grad_retain_sample_size = 8 * forget_size
+                retain_samples_used_for_update = 8 * forget_size
 
                 total_samples_needed = max(
                     neg_grad_retain_sample_size,
@@ -1929,8 +1929,8 @@ def unlearn_recbole(
                 retain_batch_size = config["train_batch_size"]
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
-                samples_wanted_constant = 256
-                retain_samples_used_for_update = 16 * forget_size
+                samples_wanted_constant = 32
+                retain_samples_used_for_update = 8 * forget_size
                 unlearn_iters_contrastive = 8
 
                 total_samples_needed = max(
@@ -1946,8 +1946,8 @@ def unlearn_recbole(
                 forget_size = len(forget_data[0].dataset) if isinstance(forget_data, tuple) else len(forget_data.dataset)
 
                 # GIF: similar to kookmin approach
-                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 16 * forget_size
-                hessian_sample_size = 1024
+                retain_samples_used_for_update = config["retain_samples_used_for_update"] if "retain_samples_used_for_update" in config else 8 * forget_size
+                hessian_sample_size = 32
 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1963,7 +1963,7 @@ def unlearn_recbole(
 
                 # CEU: needs samples for Hessian computation and influence estimation
                 ceu_hessian_samples = config["ceu_hessian_samples"] if "ceu_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 16 * forget_size
+                retain_samples_used_for_update = 8 * forget_size
 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1979,7 +1979,7 @@ def unlearn_recbole(
 
                 # IDEA: needs samples for Hessian computation and gradient estimation
                 idea_hessian_samples = config["idea_hessian_samples"] if "idea_hessian_samples" in config else 1024
-                retain_samples_used_for_update = 16 * forget_size
+                retain_samples_used_for_update = 8 * forget_size
 
                 total_samples_needed = max(
                     retain_samples_used_for_update,
@@ -1995,9 +1995,9 @@ def unlearn_recbole(
 
                 # SEIF: needs samples for repair phase fine-tuning
                 # Use similar amount as other methods - enough for multiple epochs
-                samples_wanted_constant = 256
+                samples_wanted_constant = 32
                 seif_repair_epochs = config["seif_repair_epochs"] if "seif_repair_epochs" in config else 4
-                retain_samples_used_for_update = 16 * forget_size * seif_repair_epochs
+                retain_samples_used_for_update = 8 * forget_size * seif_repair_epochs
 
                 total_samples_needed = max(
                     retain_samples_used_for_update,

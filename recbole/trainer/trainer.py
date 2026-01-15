@@ -3430,7 +3430,6 @@ class Trainer(AbstractTrainer):
                     # Use epsilon threshold instead of exact zero comparison for numerical stability
                     if abs(pq_dot) < 1e-10:
                         # p and q are nearly orthogonal, we cannot proceed
-                        print(f"[CG]  p and q are nearly orthogonal (dot={pq_dot}) at clean_forget iteration {i // bs}, stopping.")
                         break
 
                     # Check for NaN/Inf in dot product
@@ -3488,7 +3487,6 @@ class Trainer(AbstractTrainer):
                 # Use epsilon threshold instead of exact zero comparison for numerical stability
                 if abs(pq_dot) < 1e-10:
                     # p and q are nearly orthogonal, we cannot proceed
-                    print(f"[CG]  p and q are nearly orthogonal (dot={pq_dot}) at retain_train iteration {i // bs}, stopping.")
                     break
 
                 # Check for NaN/Inf in dot product
