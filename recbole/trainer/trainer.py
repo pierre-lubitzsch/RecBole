@@ -1774,34 +1774,57 @@ class Trainer(AbstractTrainer):
         def compute_hvp(v):
             """Hessian-Vector Product"""
             hvp_acc = [torch.zeros_like(p) for p in param_list]
+            has_rnn = self.has_recurrent_layers(self.model)
             for interaction in hessian_samples:
                 self.model.zero_grad()
-                loss = loss_func(interaction)
-                grads = torch.autograd.grad(loss, param_list, create_graph=True)
+                # second derivative not supported for RNNs when using cuDNN...
+                if has_rnn:
+                    with torch.backends.cudnn.flags(enabled=False):
+                        loss = loss_func(interaction)
+                        grads = torch.autograd.grad(loss, param_list, create_graph=True)
 
-                # Check for NaN/Inf in first-order gradients
-                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
-                    print("[GIF HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
-                    continue
+                        # Check for NaN/Inf in first-order gradients
+                        if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                            print("[GIF HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
+                            continue
 
-                # Compute dot product of gradients with v
-                dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
+                        # Compute dot product of gradients with v
+                        dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
 
-                # Check for NaN/Inf in dot product
-                if torch.isnan(dot_product) or torch.isinf(dot_product):
-                    print(f"[GIF HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
-                    continue
+                        # Check for NaN/Inf in dot product
+                        if torch.isnan(dot_product) or torch.isinf(dot_product):
+                            print(f"[GIF HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
+                            continue
 
-                # Compute gradients of dot product (this gives Hv)
-                hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
+                        # Compute gradients of dot product (this gives Hv)
+                        hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
+                else:
+                    loss = loss_func(interaction)
+                    grads = torch.autograd.grad(loss, param_list, create_graph=True)
 
-                # Check for NaN/Inf in HVP output
-                if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
-                    print("[GIF HVP] Warning: NaN or Inf detected in Hessian-vector product, skipping this batch")
-                    continue
+                    # Check for NaN/Inf in first-order gradients
+                    if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                        print("[GIF HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
+                        continue
 
-                for i in range(len(hvp_acc)):
-                    hvp_acc[i] += hvp[i].detach() / len(hessian_samples)
+                    # Compute dot product of gradients with v
+                    dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
+
+                    # Check for NaN/Inf in dot product
+                    if torch.isnan(dot_product) or torch.isinf(dot_product):
+                        print(f"[GIF HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
+                        continue
+
+                    # Compute gradients of dot product (this gives Hv)
+                    hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
+
+                    # Check for NaN/Inf in HVP output
+                    if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
+                        print("[GIF HVP] Warning: NaN or Inf detected in Hessian-vector product, skipping this batch")
+                        continue
+
+                    for i in range(len(hvp_acc)):
+                        hvp_acc[i] += hvp[i].detach() / len(hessian_samples)
 
             return hvp_acc
 
@@ -2228,40 +2251,75 @@ class Trainer(AbstractTrainer):
             """Compute Hessian-Vector Product H*v"""
             hvp_acc = [torch.zeros_like(p) for p in param_list]
             valid_samples = 0
+            has_rnn = self.has_recurrent_layers(self.model)
             for interaction in hessian_samples:
                 self.model.zero_grad()
-                loss = loss_func(interaction)
-                # Add L2 regularization term: lambda/2 * ||theta||^2
-                if ceu_lambda > 0:
-                    l2_reg = sum((p ** 2).sum() for p in param_list)
-                    loss = loss + (ceu_lambda / 2) * l2_reg
+                # second derivative not supported for RNNs when using cuDNN...
+                if has_rnn:
+                    with torch.backends.cudnn.flags(enabled=False):
+                        loss = loss_func(interaction)
+                        # Add L2 regularization term: lambda/2 * ||theta||^2
+                        if ceu_lambda > 0:
+                            l2_reg = sum((p ** 2).sum() for p in param_list)
+                            loss = loss + (ceu_lambda / 2) * l2_reg
+                        grads = torch.autograd.grad(loss, param_list, create_graph=True)
 
-                grads = torch.autograd.grad(loss, param_list, create_graph=True)
+                        # Check for NaN/Inf in first-order gradients
+                        if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                            print("[CEU HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
+                            continue
 
-                # Check for NaN/Inf in first-order gradients
-                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
-                    print("[CEU HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
-                    continue
+                        # Compute dot product of gradients with v
+                        dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
 
-                # Compute dot product of gradients with v
-                dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
+                        # Check for NaN/Inf in dot product
+                        if torch.isnan(dot_product) or torch.isinf(dot_product):
+                            print(f"[CEU HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
+                            continue
 
-                # Check for NaN/Inf in dot product
-                if torch.isnan(dot_product) or torch.isinf(dot_product):
-                    print(f"[CEU HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
-                    continue
+                        # Compute gradients of dot product (this gives Hv)
+                        hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
 
-                # Compute gradients of dot product (this gives Hv)
-                hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
+                        # Check for NaN/Inf in HVP output
+                        if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
+                            print("[CEU HVP] Warning: NaN or Inf detected in Hessian-vector product, skipping this batch")
+                            continue
 
-                # Check for NaN/Inf in HVP output
-                if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
-                    print("[CEU HVP] Warning: NaN or Inf detected in Hessian-vector product, skipping this batch")
-                    continue
+                        for i in range(len(hvp_acc)):
+                            hvp_acc[i] += hvp[i].detach()
+                        valid_samples += 1
+                else:
+                    loss = loss_func(interaction)
+                    # Add L2 regularization term: lambda/2 * ||theta||^2
+                    if ceu_lambda > 0:
+                        l2_reg = sum((p ** 2).sum() for p in param_list)
+                        loss = loss + (ceu_lambda / 2) * l2_reg
+                    grads = torch.autograd.grad(loss, param_list, create_graph=True)
 
-                for i in range(len(hvp_acc)):
-                    hvp_acc[i] += hvp[i].detach()
-                valid_samples += 1
+                    # Check for NaN/Inf in first-order gradients
+                    if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                        print("[CEU HVP] Warning: NaN or Inf detected in first-order gradients, skipping this batch")
+                        continue
+
+                    # Compute dot product of gradients with v
+                    dot_product = sum((g * v_i).sum() for g, v_i in zip(grads, v))
+
+                    # Check for NaN/Inf in dot product
+                    if torch.isnan(dot_product) or torch.isinf(dot_product):
+                        print(f"[CEU HVP] Warning: NaN or Inf detected in dot product, skipping this batch")
+                        continue
+
+                    # Compute gradients of dot product (this gives Hv)
+                    hvp = torch.autograd.grad(dot_product, param_list, retain_graph=False)
+
+                    # Check for NaN/Inf in HVP output
+                    if any(torch.isnan(h).any() or torch.isinf(h).any() for h in hvp):
+                        print("[CEU HVP] Warning: NaN or Inf detected in Hessian-vector product, skipping this batch")
+                        continue
+
+                    for i in range(len(hvp_acc)):
+                        hvp_acc[i] += hvp[i].detach()
+                    valid_samples += 1
 
             # Average over valid samples
             if valid_samples > 0:
@@ -2858,36 +2916,72 @@ class Trainer(AbstractTrainer):
         # Compute average loss on batches
         total_loss = 0
         total_samples = 0
+        has_rnn = self.has_recurrent_layers(self.model)
 
-        for batch in batches:
-            batch = batch.to(self.device)
-            loss = loss_func(batch)
-            total_loss += loss * len(batch)
-            total_samples += len(batch)
+        # second derivative not supported for RNNs when using cuDNN...
+        if has_rnn:
+            with torch.backends.cudnn.flags(enabled=False):
+                for batch in batches:
+                    batch = batch.to(self.device)
+                    loss = loss_func(batch)
+                    total_loss += loss * len(batch)
+                    total_samples += len(batch)
 
-        avg_loss = total_loss / max(total_samples, 1)
+                avg_loss = total_loss / max(total_samples, 1)
 
-        # Compute gradients
-        grads = torch.autograd.grad(avg_loss, param_list, create_graph=True, allow_unused=True)
+                # Compute gradients
+                grads = torch.autograd.grad(avg_loss, param_list, create_graph=True, allow_unused=True)
 
-        # Check for None gradients
-        if any(g is None for g in grads):
-            return None
+                # Check for None gradients
+                if any(g is None for g in grads):
+                    return None
 
-        # Check for NaN/Inf in gradients (before HVP computation)
-        if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
-            print("[IDEA HVP] NaN or Inf detected in first-order gradients")
-            return None
+                # Check for NaN/Inf in gradients (before HVP computation)
+                if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                    print("[IDEA HVP] NaN or Inf detected in first-order gradients")
+                    return None
+        else:
+            for batch in batches:
+                batch = batch.to(self.device)
+                loss = loss_func(batch)
+                total_loss += loss * len(batch)
+                total_samples += len(batch)
+
+            avg_loss = total_loss / max(total_samples, 1)
+
+            # Compute gradients
+            grads = torch.autograd.grad(avg_loss, param_list, create_graph=True, allow_unused=True)
+
+            # Check for None gradients
+            if any(g is None for g in grads):
+                return None
+
+            # Check for NaN/Inf in gradients (before HVP computation)
+            if any(torch.isnan(g).any() or torch.isinf(g).any() for g in grads):
+                print("[IDEA HVP] NaN or Inf detected in first-order gradients")
+                return None
 
         # Compute HVP: H * v = grad(grad^T * v)
-        grad_vector_dot = sum((g * v).sum() for g, v in zip(grads, vectors))
+        # second derivative not supported for RNNs when using cuDNN...
+        if has_rnn:
+            with torch.backends.cudnn.flags(enabled=False):
+                grad_vector_dot = sum((g * v).sum() for g, v in zip(grads, vectors))
 
-        # Check for NaN/Inf in dot product
-        if torch.isnan(grad_vector_dot) or torch.isinf(grad_vector_dot):
-            print(f"[IDEA HVP] NaN or Inf detected in dot product (dot={grad_vector_dot})")
-            return None
+                # Check for NaN/Inf in dot product
+                if torch.isnan(grad_vector_dot) or torch.isinf(grad_vector_dot):
+                    print(f"[IDEA HVP] NaN or Inf detected in dot product (dot={grad_vector_dot})")
+                    return None
 
-        hvp = torch.autograd.grad(grad_vector_dot, param_list, allow_unused=True)
+                hvp = torch.autograd.grad(grad_vector_dot, param_list, allow_unused=True)
+        else:
+            grad_vector_dot = sum((g * v).sum() for g, v in zip(grads, vectors))
+
+            # Check for NaN/Inf in dot product
+            if torch.isnan(grad_vector_dot) or torch.isinf(grad_vector_dot):
+                print(f"[IDEA HVP] NaN or Inf detected in dot product (dot={grad_vector_dot})")
+                return None
+
+            hvp = torch.autograd.grad(grad_vector_dot, param_list, allow_unused=True)
 
         # Check for None in HVP
         if any(h is None for h in hvp):
