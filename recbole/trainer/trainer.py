@@ -2343,6 +2343,11 @@ class Trainer(AbstractTrainer):
         p = [d.clone() for d in delta_grads]
 
         rs_old = sum((r_i * r_i).sum() for r_i in r)
+        
+        # Check initial residual is valid
+        if rs_old.item() < 0 or torch.isnan(rs_old) or torch.isinf(rs_old):
+            print(f"[CEU] Warning: Invalid initial residual (rs_old={rs_old.item()}), stopping CG solver")
+            return
 
         for iteration in range(ceu_cg_iterations):
             # Check timeout (allow at least one full iteration to complete)
@@ -2366,11 +2371,25 @@ class Trainer(AbstractTrainer):
             if torch.isnan(pAp) or torch.isinf(pAp):
                 print(f"[CEU] Warning: NaN/Inf detected in pAp at CG iteration {iteration}, stopping CG solver")
                 break
-            if abs(pAp.item()) < 1e-10:
-                print(f"[CEU] Warning: Near-zero pAp ({pAp.item()}) at CG iteration {iteration}, stopping CG solver")
+            
+            pAp_item = pAp.item()
+            if abs(pAp_item) < 1e-10:
+                print(f"[CEU] Warning: Near-zero pAp ({pAp_item}) at CG iteration {iteration}, stopping CG solver")
+                break
+            
+            # CRITICAL FIX: Check for negative pAp (non-positive definite system)
+            # If pAp < 0, the system is not positive definite, and alpha will be negative,
+            # causing the update to move in the wrong direction and increase loss
+            if pAp_item < 0:
+                print(f"[CEU] Warning: Negative pAp ({pAp_item}) detected at CG iteration {iteration}. System is not positive definite. This causes loss to increase. Stopping CG solver.")
                 break
 
             alpha = rs_old / pAp
+
+            # Check for negative alpha (should not happen if pAp > 0, but double-check)
+            if alpha.item() < 0:
+                print(f"[CEU] Warning: Negative alpha ({alpha.item()}) detected at CG iteration {iteration}, stopping CG solver")
+                break
 
             # Update x = x + alpha * p
             for i in range(len(x)):
@@ -2389,29 +2408,40 @@ class Trainer(AbstractTrainer):
                 r[i] = r[i] - alpha * Ap[i]
 
             rs_new = sum((r_i * r_i).sum() for r_i in r)
+            
+            # Check for negative rs_new (should never happen, indicates numerical error)
+            if rs_new.item() < 0:
+                print(f"[CEU] Warning: Negative residual squared ({rs_new.item()}) detected at CG iteration {iteration}, stopping CG solver")
+                break
 
-            # Check convergence
+            # Check convergence every iteration (not just every 10) to catch divergence early
+            residual_norm = torch.sqrt(rs_new).item()
+
+            # Check for NaN/Inf in convergence metric
+            if math.isnan(residual_norm) or math.isinf(residual_norm):
+                print(f"[CEU] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
+                break
+
+            # Check for divergence: residual norm too large (similar to SCIF)
+            if residual_norm > 1e10:
+                print(f"[CEU] Warning: Residual norm too large ({residual_norm:.2e}), stopping CG solver")
+                break
+
+            # Print progress every 10 iterations
             if iteration % 10 == 0:
-                residual_norm = torch.sqrt(rs_new).item()
-
-                # Check for NaN/Inf in convergence metric
-                if math.isnan(residual_norm) or math.isinf(residual_norm):
-                    print(f"[CEU] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
-                    break
-
-                # Check for divergence: residual norm too large (similar to SCIF)
-                if residual_norm > 1e10:
-                    print(f"[CEU] Warning: Residual norm too large ({residual_norm:.2e}), stopping CG solver")
-                    break
-
                 print(f"[CEU] CG Iteration {iteration}/{ceu_cg_iterations}, residual norm: {residual_norm:.6f}")
 
-                if residual_norm < 1e-6:
-                    print(f"[CEU] CG converged at iteration {iteration}")
-                    break
+            if residual_norm < 1e-6:
+                print(f"[CEU] CG converged at iteration {iteration}")
+                break
 
             # Compute beta = r_new^T r_new / r_old^T r_old
             beta = rs_new / (rs_old + 1e-10)
+            
+            # Check for negative beta (should not happen, but indicates numerical issues)
+            if beta.item() < 0:
+                print(f"[CEU] Warning: Negative beta ({beta.item()}) detected at CG iteration {iteration}, stopping CG solver")
+                break
 
             # Update p = r + beta * p
             for i in range(len(p)):
@@ -2728,6 +2758,11 @@ class Trainer(AbstractTrainer):
         p = [d.clone() for d in delta_grads]
 
         rs_old = sum((r_i * r_i).sum() for r_i in r)
+        
+        # Check initial residual is valid
+        if rs_old.item() < 0 or torch.isnan(rs_old) or torch.isinf(rs_old):
+            print(f"[IDEA] Warning: Invalid initial residual (rs_old={rs_old.item()}), stopping CG solver")
+            return
 
         for iteration in range(idea_iterations):
             # Check timeout (allow at least one full iteration to complete)
@@ -2755,11 +2790,25 @@ class Trainer(AbstractTrainer):
             if torch.isnan(pAp) or torch.isinf(pAp):
                 print(f"[IDEA] Warning: NaN/Inf detected in pAp at CG iteration {iteration}, stopping CG solver")
                 break
-            if abs(pAp.item()) < 1e-10:
-                print(f"[IDEA] Warning: Near-zero pAp ({pAp.item()}) at CG iteration {iteration}, stopping CG solver")
+            
+            pAp_item = pAp.item()
+            if abs(pAp_item) < 1e-10:
+                print(f"[IDEA] Warning: Near-zero pAp ({pAp_item}) at CG iteration {iteration}, stopping CG solver")
+                break
+            
+            # CRITICAL FIX: Check for negative pAp (non-positive definite system)
+            # If pAp < 0, the system is not positive definite, and alpha will be negative,
+            # causing the update to move in the wrong direction and increase loss
+            if pAp_item < 0:
+                print(f"[IDEA] Warning: Negative pAp ({pAp_item}) detected at CG iteration {iteration}. System is not positive definite. This causes loss to increase. Stopping CG solver.")
                 break
 
             alpha = rs_old / pAp
+
+            # Check for negative alpha (should not happen if pAp > 0, but double-check)
+            if alpha.item() < 0:
+                print(f"[IDEA] Warning: Negative alpha ({alpha.item()}) detected at CG iteration {iteration}, stopping CG solver")
+                break
 
             # Update x = x + alpha * p
             for i in range(len(x)):
@@ -2778,29 +2827,40 @@ class Trainer(AbstractTrainer):
                 r[i] = r[i] - alpha * Ap[i]
 
             rs_new = sum((r_i * r_i).sum() for r_i in r)
+            
+            # Check for negative rs_new (should never happen, indicates numerical error)
+            if rs_new.item() < 0:
+                print(f"[IDEA] Warning: Negative residual squared ({rs_new.item()}) detected at CG iteration {iteration}, stopping CG solver")
+                break
 
-            # Check convergence
+            # Check convergence every iteration (not just every 10) to catch divergence early
+            residual_norm = torch.sqrt(rs_new).item()
+
+            # Check for NaN/Inf in convergence metric
+            if math.isnan(residual_norm) or math.isinf(residual_norm):
+                print(f"[IDEA] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
+                break
+
+            # Check for divergence: residual norm too large (similar to SCIF)
+            if residual_norm > 1e10:
+                print(f"[IDEA] Warning: Residual norm too large ({residual_norm:.2e}), stopping CG solver")
+                break
+
+            # Print progress every 10 iterations
             if iteration % 10 == 0:
-                residual_norm = torch.sqrt(rs_new).item()
-
-                # Check for NaN/Inf in convergence metric
-                if math.isnan(residual_norm) or math.isinf(residual_norm):
-                    print(f"[IDEA] Warning: Divergence detected (NaN/inf residual), stopping CG solver")
-                    break
-
-                # Check for divergence: residual norm too large (similar to SCIF)
-                if residual_norm > 1e10:
-                    print(f"[IDEA] Warning: Residual norm too large ({residual_norm:.2e}), stopping CG solver")
-                    break
-
                 print(f"[IDEA] CG Iteration {iteration}/{idea_iterations}, residual norm: {residual_norm:.6f}")
 
-                if residual_norm < 1e-6:
-                    print(f"[IDEA] CG converged at iteration {iteration}")
-                    break
+            if residual_norm < 1e-6:
+                print(f"[IDEA] CG converged at iteration {iteration}")
+                break
 
             # Compute beta = r_new^T r_new / r_old^T r_old
             beta = rs_new / (rs_old + 1e-10)
+            
+            # Check for negative beta (should not happen, but indicates numerical issues)
+            if beta.item() < 0:
+                print(f"[IDEA] Warning: Negative beta ({beta.item()}) detected at CG iteration {iteration}, stopping CG solver")
+                break
 
             # Update p = r + beta * p
             for i in range(len(p)):
@@ -3486,6 +3546,11 @@ class Trainer(AbstractTrainer):
         r      = [v.clone() for v in v_list]             # r_theta = v - H x_theta  (H x_theta = 0)
         p      = [ri.clone() for ri in r]                # p_theta = r_theta
         rs_old = self._dot_list(r, r).item()
+        
+        # Check initial residual is valid
+        if rs_old < 0 or math.isnan(rs_old) or math.isinf(rs_old):
+            self.logger.warning(f"[CG] Invalid initial residual (rs_old={rs_old}), stopping CG solver")
+            return None, True
 
         samples_wanted = samples_wanted_constant * max(1, len(forget_data.dataset) - clean_forget_data_length)
         samples_seen = 0
@@ -3521,17 +3586,32 @@ class Trainer(AbstractTrainer):
                     q = [qi + damping * pi for qi, pi in zip(q, p)]
 
                     pq_dot = self._dot_list(p, q).item()
-                    # Use epsilon threshold instead of exact zero comparison for numerical stability
-                    if abs(pq_dot) < 1e-10:
-                        # p and q are nearly orthogonal, we cannot proceed
-                        break
-
+                    
                     # Check for NaN/Inf in dot product
                     if math.isnan(pq_dot) or math.isinf(pq_dot):
                         self.logger.warning(f"[CG] NaN or Inf detected in p*q dot product at clean_forget iteration {i // bs}")
                         break
+                    
+                    # Use epsilon threshold instead of exact zero comparison for numerical stability
+                    if abs(pq_dot) < 1e-10:
+                        # p and q are nearly orthogonal, we cannot proceed
+                        break
+                    
+                    # CRITICAL FIX: Check for negative pq_dot (non-positive definite system)
+                    # If pq_dot < 0, the system is not positive definite, and alpha will be negative,
+                    # causing the update to move in the wrong direction and increase loss
+                    if pq_dot < 0:
+                        self.logger.warning(f"[CG] Negative p*q dot product ({pq_dot}) detected at clean_forget iteration {i // bs}. System is not positive definite. This causes loss to increase. Stopping CG solver.")
+                        break_flag = True
+                        break
 
                     alpha = rs_old / pq_dot
+                    
+                    # Check for negative alpha (should not happen if pq_dot > 0, but double-check)
+                    if alpha < 0:
+                        self.logger.warning(f"[CG] Negative alpha ({alpha}) detected at clean_forget iteration {i // bs}, stopping CG solver")
+                        break_flag = True
+                        break
 
                     # x_{k+1}  =  x_k + alpha p_k
                     x = self._add_scaled(x, p, alpha)
@@ -3540,10 +3620,24 @@ class Trainer(AbstractTrainer):
                     r = self._add_scaled(r, q, -alpha)
 
                 rs_new = self._dot_list(r, r).item()
-                if math.sqrt(rs_new) < tol:
+                
+                # Check for negative rs_new (should never happen, indicates numerical error)
+                if rs_new < 0:
+                    self.logger.warning(f"[CG] Negative residual squared ({rs_new}) detected at clean_forget iteration {i // bs}, stopping CG solver")
+                    break_flag = True
+                    break
+                
+                residual_norm = math.sqrt(rs_new)
+                if residual_norm < tol:
                     break  # converged
 
                 beta = rs_new / rs_old
+                
+                # Check for negative beta (should not happen, but indicates numerical issues)
+                if beta < 0:
+                    self.logger.warning(f"[CG] Negative beta ({beta}) detected at clean_forget iteration {i // bs}, stopping CG solver")
+                    break_flag = True
+                    break
 
                 # p_{k+1}  =  r_{k+1} + beta p_k
                 p = [ri + beta * pi for ri, pi in zip(r, p)]
@@ -3578,17 +3672,32 @@ class Trainer(AbstractTrainer):
                 q = [qi + damping * pi for qi, pi in zip(q, p)]
 
                 pq_dot = self._dot_list(p, q).item()
-                # Use epsilon threshold instead of exact zero comparison for numerical stability
-                if abs(pq_dot) < 1e-10:
-                    # p and q are nearly orthogonal, we cannot proceed
-                    break
-
+                
                 # Check for NaN/Inf in dot product
                 if math.isnan(pq_dot) or math.isinf(pq_dot):
                     self.logger.warning(f"[CG] NaN or Inf detected in p*q dot product at retain_train iteration {i // bs}")
                     break
+                
+                # Use epsilon threshold instead of exact zero comparison for numerical stability
+                if abs(pq_dot) < 1e-10:
+                    # p and q are nearly orthogonal, we cannot proceed
+                    break
+                
+                # CRITICAL FIX: Check for negative pq_dot (non-positive definite system)
+                # If pq_dot < 0, the system is not positive definite, and alpha will be negative,
+                # causing the update to move in the wrong direction and increase loss
+                if pq_dot < 0:
+                    self.logger.warning(f"[CG] Negative p*q dot product ({pq_dot}) detected at retain_train iteration {i // bs}. System is not positive definite. This causes loss to increase. Stopping CG solver.")
+                    break_flag = True
+                    break
 
                 alpha = rs_old / pq_dot
+                
+                # Check for negative alpha (should not happen if pq_dot > 0, but double-check)
+                if alpha < 0:
+                    self.logger.warning(f"[CG] Negative alpha ({alpha}) detected at retain_train iteration {i // bs}, stopping CG solver")
+                    break_flag = True
+                    break
 
                 # x_{k+1}  =  x_k + alpha p_k
                 x = self._add_scaled(x, p, alpha)
@@ -3597,10 +3706,24 @@ class Trainer(AbstractTrainer):
                 r = self._add_scaled(r, q, -alpha)
 
                 rs_new = self._dot_list(r, r).item()
-                if math.sqrt(rs_new) < tol:
+                
+                # Check for negative rs_new (should never happen, indicates numerical error)
+                if rs_new < 0:
+                    self.logger.warning(f"[CG] Negative residual squared ({rs_new}) detected at retain_train iteration {i // bs}, stopping CG solver")
+                    break_flag = True
+                    break
+                
+                residual_norm = math.sqrt(rs_new)
+                if residual_norm < tol:
                     break  # converged
 
                 beta = rs_new / rs_old
+                
+                # Check for negative beta (should not happen, but indicates numerical issues)
+                if beta < 0:
+                    self.logger.warning(f"[CG] Negative beta ({beta}) detected at retain_train iteration {i // bs}, stopping CG solver")
+                    break_flag = True
+                    break
 
                 # p_{k+1}  =  r_{k+1} + beta p_k
                 p = [ri + beta * pi for ri, pi in zip(r, p)]
