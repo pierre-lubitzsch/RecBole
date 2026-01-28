@@ -773,79 +773,160 @@ def run_recbole(
             # For retrained or unlearned models, evaluate the users that were supposed to be unlearned
             if retrain_flag or (unlearning_fraction is not None and unlearning_sample_selection_method is not None and retrain_checkpoint_idx_to_match is not None):
                 # For retrained models, evaluate the users that were supposed to be unlearned
-                # Load unlearning samples to determine which users were unlearned
-                unlearning_samples_path = os.path.join(
+                # Build base path for unlearning samples (without extension)
+                unlearning_base_path = os.path.join(
                     config["data_path"],
                     f"{config['dataset']}_unlearn_pairs_sensitive_category_{sensitive_category}"
                     f"_seed_{config['unlearn_sample_selection_seed']}"
-                    f"_unlearning_fraction_{float(config['unlearning_fraction'])}.inter"
+                    f"_unlearning_fraction_{float(config['unlearning_fraction'])}"
                 )
 
-                if config.task_type == "SBR":
-                    # Read header to infer column names dynamically
-                    with open(unlearning_samples_path, 'r') as f:
-                        header_line = f.readline().strip()
+                if config.task_type == "NBR":
+                    # For NBR, forget sets are stored as user ID lists in .pkl or .json
+                    unlearning_users_path_pkl = unlearning_base_path + ".pkl"
+                    unlearning_users_path_json = unlearning_base_path + ".json"
 
-                    # Extract column names from header (e.g., "user_id:token" -> "user_id")
-                    column_names = [col.split(':')[0] for col in header_line.split('\t')]
+                    unlearning_user_ids_raw = None
+                    if os.path.exists(unlearning_users_path_pkl):
+                        logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_pkl}")
+                        with open(unlearning_users_path_pkl, "rb") as f:
+                            unlearning_user_ids_raw = pickle.load(f)
+                    elif os.path.exists(unlearning_users_path_json):
+                        logger.info(f"Loading NBR unlearning user IDs from: {unlearning_users_path_json}")
+                        with open(unlearning_users_path_json, "r") as f:
+                            unlearning_user_ids_raw = json.load(f)
+                    else:
+                        raise FileNotFoundError(
+                            f"NBR unlearning user IDs file not found. Tried:\n"
+                            f"  - {unlearning_users_path_pkl}\n"
+                            f"  - {unlearning_users_path_json}\n"
+                            f"Please create unlearning sets using create_nbr_unlearning_sets_user_ids.py"
+                        )
 
-                    unlearning_samples_for_eval = pd.read_csv(
-                        unlearning_samples_path,
-                        sep="\t",
-                        names=column_names,
-                        header=0,
+                    # Apply checkpoint-based subset selection if needed
+                    checkpoint_idx = (
+                        retrain_checkpoint_idx_to_match
+                        if retrain_checkpoint_idx_to_match is not None
+                        else 3
                     )
-                elif config.task_type == "CF":
-                    unlearning_samples_for_eval = pd.read_csv(
-                        unlearning_samples_path,
-                        sep="\t",
-                        names=["user_id", "item_id", "rating", "timestamp"],
-                        header=0,
-                    )
+                    total_users = len(unlearning_user_ids_raw)
+                    unlearning_checkpoints = [
+                        total_users // 4,
+                        total_users // 2,
+                        3 * total_users // 4,
+                        total_users - 1,
+                    ]
+                    users_unlearned = unlearning_checkpoints[checkpoint_idx]
+
+                    # Map the external user tokens to internal user IDs using the original dataset
+                    uid_field = original_dataset.uid_field
+                    sorted_users = sorted(unlearning_user_ids_raw)[: users_unlearned + 1]
+                    unlearned_user_ids = []
+                    skipped_users = []
+                    for u in sorted_users:
+                        try:
+                            user_id = original_dataset.token2id(uid_field, str(u))
+                            unlearned_user_ids.append(user_id)
+                        except ValueError:
+                            # User token doesn't exist in original dataset, skip
+                            skipped_users.append(str(u))
+                            continue
+
+                    if skipped_users:
+                        logger.warning(
+                            f"Skipped {len(skipped_users)} users that don't exist in original dataset: "
+                            f"{skipped_users[:5]}{'...' if len(skipped_users) > 5 else ''}"
+                        )
+
+                    print(f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {checkpoint_idx}")
                 else:
-                    unlearning_samples_for_eval = pd.read_csv(
-                        unlearning_samples_path,
-                        sep="\t",
-                        names=["user_id", "item_id", "timestamp"],
-                        header=0,
+                    # Non-NBR tasks: load unlearning samples from .inter file
+                    unlearning_samples_path = unlearning_base_path + ".inter"
+
+                    if config.task_type == "SBR":
+                        # Read header to infer column names dynamically
+                        with open(unlearning_samples_path, "r") as f:
+                            header_line = f.readline().strip()
+
+                        # Extract column names from header (e.g., "user_id:token" -> "user_id")
+                        column_names = [
+                            col.split(":")[0] for col in header_line.split("\t")
+                        ]
+
+                        unlearning_samples_for_eval = pd.read_csv(
+                            unlearning_samples_path,
+                            sep="\t",
+                            names=column_names,
+                            header=0,
+                        )
+                    elif config.task_type == "CF":
+                        unlearning_samples_for_eval = pd.read_csv(
+                            unlearning_samples_path,
+                            sep="\t",
+                            names=["user_id", "item_id", "rating", "timestamp"],
+                            header=0,
+                        )
+                    else:
+                        unlearning_samples_for_eval = pd.read_csv(
+                            unlearning_samples_path,
+                            sep="\t",
+                            names=["user_id", "item_id", "timestamp"],
+                            header=0,
+                        )
+
+                    # Use uid_field and iid_field from original_dataset to handle SBR (session_id) vs CF (user_id)
+                    uid_field_eval = original_dataset.uid_field
+                    iid_field_eval = original_dataset.iid_field
+                    pairs_by_user = (
+                        unlearning_samples_for_eval.groupby(uid_field_eval)[
+                            iid_field_eval
+                        ]
+                        .agg(list)
+                        .to_dict()
                     )
 
-                # Use uid_field and iid_field from original_dataset to handle SBR (session_id) vs CF (user_id)
-                uid_field_eval = original_dataset.uid_field
-                iid_field_eval = original_dataset.iid_field
-                pairs_by_user = (
-                    unlearning_samples_for_eval.groupby(uid_field_eval)[iid_field_eval]
-                    .agg(list)
-                    .to_dict()
-                )
+                    # Calculate how many users were unlearned at this checkpoint
+                    checkpoint_idx = (
+                        retrain_checkpoint_idx_to_match
+                        if retrain_checkpoint_idx_to_match is not None
+                        else 3
+                    )
+                    unlearning_checkpoints = [
+                        len(pairs_by_user) // 4,
+                        len(pairs_by_user) // 2,
+                        3 * len(pairs_by_user) // 4,
+                        len(pairs_by_user) - 1,
+                    ]
+                    users_unlearned = unlearning_checkpoints[checkpoint_idx]
 
-                # Calculate how many users were unlearned at this checkpoint
-                checkpoint_idx = retrain_checkpoint_idx_to_match if retrain_checkpoint_idx_to_match is not None else 3
-                unlearning_checkpoints = [len(pairs_by_user) // 4, len(pairs_by_user) // 2, 3 * len(pairs_by_user) // 4, len(pairs_by_user) - 1]
-                users_unlearned = unlearning_checkpoints[checkpoint_idx]
+                    # Get the actual user IDs that were unlearned
+                    # pairs_by_user.keys() contains tokens from CSV (ints or strings depending on dataset)
+                    # Convert tokens to strings then to internal IDs using original_dataset to ensure consistent mappings
+                    uid_field = original_dataset.uid_field
+                    sorted_users = sorted(pairs_by_user.keys())[
+                        : users_unlearned + 1
+                    ]
+                    unlearned_user_ids = []
+                    skipped_users = []
+                    for u in sorted_users:
+                        try:
+                            # Use original_dataset to ensure we have full token-to-ID mappings
+                            user_id = original_dataset.token2id(uid_field, str(u))
+                            unlearned_user_ids.append(user_id)
+                        except ValueError:
+                            # User token doesn't exist in original dataset, skip
+                            skipped_users.append(str(u))
+                            continue
 
-                # Get the actual user IDs that were unlearned
-                # pairs_by_user.keys() contains tokens from CSV (ints or strings depending on dataset)
-                # Convert tokens to strings then to internal IDs using original_dataset to ensure consistent mappings
-                uid_field = original_dataset.uid_field
-                sorted_users = sorted(pairs_by_user.keys())[:users_unlearned + 1]
-                unlearned_user_ids = []
-                skipped_users = []
-                for u in sorted_users:
-                    try:
-                        # Use original_dataset to ensure we have full token-to-ID mappings
-                        user_id = original_dataset.token2id(uid_field, str(u))
-                        unlearned_user_ids.append(user_id)
-                    except ValueError:
-                        # User token doesn't exist in original dataset, skip
-                        skipped_users.append(str(u))
-                        continue
+                    if skipped_users:
+                        logger.warning(
+                            f"Skipped {len(skipped_users)} users that don't exist in original dataset: "
+                            f"{skipped_users[:5]}{'...' if len(skipped_users) > 5 else ''}"
+                        )
 
-                if skipped_users:
-                    logger.warning(f"Skipped {len(skipped_users)} users that don't exist in original dataset: "
-                                 f"{skipped_users[:5]}{'...' if len(skipped_users) > 5 else ''}")
-                
-                print(f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {checkpoint_idx}")
+                    print(
+                        f"\nEvaluating {len(unlearned_user_ids)} users unlearned up to checkpoint {checkpoint_idx}"
+                    )
             else:
                 # For original models, evaluate all users
                 uid_field = dataset.uid_field
