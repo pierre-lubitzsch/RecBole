@@ -902,6 +902,10 @@ class Trainer(AbstractTrainer):
             if not clean_forget_data:
                 print(f"[Fanchuan] Warning: clean_forget_data is empty, skipping clean contrastive loss")
 
+            # Create iterator for clean_forget_data to avoid converting entire DataLoader to list
+            # Recreate iterator for each iteration since it gets exhausted
+            clean_forget_iter = iter(clean_forget_data) if clean_forget_data else None
+
             for batch_idx, forget_interaction in enumerate(forget_data):
                 # Check timeout during batch processing (allow at least one full batch to complete)
                 if time_limit_per_batch is not None and batch_idx > 0:
@@ -921,9 +925,16 @@ class Trainer(AbstractTrainer):
 
                 loss = 0
                 # Only use clean_forget_data if it's not empty
-                if clean_forget_data:
-                    clean_forget_interaction = list(clean_forget_data)[batch_idx].to(self.device)
-                    loss = self.unlearn_iterative_contrastive(forget_interaction, clean_forget_interaction, self.model)
+                # Use iterator to handle case where clean_forget_data has fewer batches than forget_data
+                if clean_forget_iter:
+                    try:
+                        clean_forget_interaction = next(clean_forget_iter).to(self.device)
+                        loss = self.unlearn_iterative_contrastive(forget_interaction, clean_forget_interaction, self.model)
+                    except StopIteration:
+                        # clean_forget_data has fewer batches than forget_data, continue without it
+                        # Set iterator to None to avoid trying to use it again in this iteration
+                        clean_forget_iter = None
+                        pass
 
                 loss += self.unlearn_iterative_contrastive(forget_interaction, retain_interaction, self.model)
                 losses.append(loss)

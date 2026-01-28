@@ -49,6 +49,7 @@ import tempfile
 import glob
 import re
 import traceback
+from copy import deepcopy
 
 def run(
     model,
@@ -366,6 +367,40 @@ def run_recbole(
                 logger.info(f"Loading original merged data from: {original_merged_path}")
                 with open(original_merged_path, 'r') as f:
                     merged_data = json.load(f)
+                
+                # First, check which sensitive items exist in the original dataset (before removing sensitive items)
+                # This ensures we only include items that survive normal filtering (e.g., min_item_inter_num)
+                logger.info("Checking which sensitive items exist in original dataset (before removal)...")
+                # Create a new config with the original merged file path
+                # Use the original config_file_list to get all defaults, then override only the JSON path
+                # This applies normal dataset filtering (MIN_NBR_BASKET_COUNT, user_inter_num_interval, etc.)
+                original_config = Config(
+                    model=model,  # Use function parameter
+                    dataset=dataset,  # Use function parameter
+                    config_file_list=config_file_list,  # Use original config files to get all defaults
+                    config_dict={
+                        "NEXT_BASKET_JSON": f"{config['dataset']}_merged.json",
+                    }
+                )
+                # Create temporary dataset from original data to check item existence
+                temp_original_dataset = create_dataset(original_config, unlearning=False, spam=False)
+                original_item_tokens = set(temp_original_dataset.field2token_id[temp_original_dataset.iid_field].keys())
+                logger.info(f"Original dataset has {len(original_item_tokens)} items after normal filtering")
+                
+                # Filter sensitive items to only those that exist in original dataset
+                # These are items that survive normal filtering (min interactions, k-core, etc.)
+                sensitive_items_in_original = []
+                for item in sensitive_items:
+                    item_token = str(item)
+                    if item_token in original_item_tokens:
+                        sensitive_items_in_original.append(item)
+                
+                logger.info(f"Found {len(sensitive_items_in_original)} sensitive items in original dataset (out of {len(sensitive_items)})")
+                logger.info(f"These items survive normal dataset filtering and will be used in forget set")
+                
+                # Store the filtered sensitive items for later use in forget set creation
+                # Convert back to set for the cleaning operation
+                sensitive_items = set(sensitive_items_in_original)
 
                 logger.info(f"Processing {len(merged_data)} users to create cleaned dataset...")
 
@@ -413,6 +448,9 @@ def run_recbole(
 
                 # Recreate dataset with cleaned data
                 dataset = create_dataset(config, unlearning=False, spam=spam)
+                
+                # Store the filtered sensitive items (as list) for later use in forget set creation
+                config["_filtered_sensitive_items"] = sensitive_items_in_original
 
                 # Clean up temporary file
                 os.unlink(temp_merged_file.name)
@@ -1025,6 +1063,67 @@ def unlearn_recbole(
     logger.info(sys.argv)
     logger.info(config)
 
+    # For NBR tasks with sensitive_category, we need to check sensitive items against original dataset
+    # before creating the cleaned dataset. This ensures we only include items that survive normal filtering.
+    if config.task_type == "NBR" and "sensitive_category" in config and config['sensitive_category'] is not None:
+        sensitive_category = config['sensitive_category']
+        
+        # Load sensitive items from file
+        sensitive_items_file = os.path.join(
+            config["data_path"],
+            f"sensitive_asins_{sensitive_category}.txt"
+        )
+        
+        if not os.path.exists(sensitive_items_file):
+            sensitive_items_file = os.path.join(
+                config["data_path"],
+                f"sensitive_products_{sensitive_category}.txt"
+            )
+        
+        if os.path.exists(sensitive_items_file):
+            logger.info(f"Pre-checking sensitive items against original dataset...")
+            with open(sensitive_items_file, 'r') as f:
+                sensitive_items_raw = set(int(line.strip()) for line in f if line.strip())
+            
+            logger.info(f"Loaded {len(sensitive_items_raw)} raw sensitive items for pre-checking")
+            
+            # Create temporary dataset from original data to check item existence
+            original_merged_path = os.path.join(
+                config["data_path"],
+                f"{config['dataset']}_merged.json"
+            )
+            
+            if os.path.exists(original_merged_path):
+                # Create a new config with the original merged file path
+                # Use the original config_file_list to get all defaults, then override only the JSON path
+                # This applies normal dataset filtering (MIN_NBR_BASKET_COUNT, user_inter_num_interval, etc.)
+                original_config = Config(
+                    model=config["model"], 
+                    dataset=config["dataset"], 
+                    config_file_list=config_file_list,  # Use original config files to get all defaults
+                    config_dict={
+                        "NEXT_BASKET_JSON": f"{config['dataset']}_merged.json",
+                    }
+                )
+                
+                # Create temporary dataset from original data to check item existence
+                temp_original_dataset = create_dataset(original_config, unlearning=False, spam=False)
+                original_item_tokens = set(temp_original_dataset.field2token_id[temp_original_dataset.iid_field].keys())
+                logger.info(f"Original dataset has {len(original_item_tokens)} items after normal filtering")
+                
+                # Filter sensitive items to only those that exist in original dataset
+                sensitive_items_in_original = []
+                for item in sensitive_items_raw:
+                    item_token = str(item)
+                    if item_token in original_item_tokens:
+                        sensitive_items_in_original.append(item)
+                
+                logger.info(f"Found {len(sensitive_items_in_original)} sensitive items in original dataset (out of {len(sensitive_items_raw)})")
+                logger.info("These items survive normal dataset filtering and will be used in forget set")
+                
+                # Store the filtered sensitive items for later use
+                config["_filtered_sensitive_items"] = sensitive_items_in_original
+
     dataset = create_dataset(config, unlearning=False, spam=spam)
     # save orig_df for forget set creation because inter_feat gets converted to torch during dataset.build()
     orig_inter_df = dataset.inter_feat.copy()
@@ -1228,21 +1327,28 @@ def unlearn_recbole(
 
             logger.info(f"Loaded {len(sensitive_items_raw)} raw sensitive items for category '{sensitive_category}'")
 
-            # Filter sensitive items to only include those that exist in the dataset
-            # The dataset may have filtered out some items due to minimum interaction thresholds
-            sensitive_items = []
-            for item in sensitive_items_raw:
-                try:
-                    # Check if this item exists in the dataset by checking the token mapping
-                    item_token = str(item)
-                    # Verify it exists in the dataset's item vocabulary (token -> ID mapping)
-                    if item_token in dataset.field2token_id[dataset.iid_field]:
-                        sensitive_items.append(item)
-                except (ValueError, KeyError):
-                    # Item doesn't exist in dataset, skip it
-                    pass
+            # For NBR tasks, use pre-filtered sensitive items that were checked against both
+            # original dataset (normal filtering) and cleaned dataset (after removal)
+            if config.task_type == "NBR" and "_filtered_sensitive_items" in config:
+                sensitive_items = config["_filtered_sensitive_items"]
+                logger.info(f"Using pre-filtered sensitive items for NBR: {len(sensitive_items)} items")
+                logger.info("These items were verified to exist in original dataset (survive normal filtering)")
+            else:
+                # For other task types, filter sensitive items to only include those that exist in the dataset
+                # The dataset may have filtered out some items due to minimum interaction thresholds
+                sensitive_items = []
+                for item in sensitive_items_raw:
+                    try:
+                        # Check if this item exists in the dataset by checking the token mapping
+                        item_token = str(item)
+                        # Verify it exists in the dataset's item vocabulary (token -> ID mapping)
+                        if item_token in dataset.field2token_id[dataset.iid_field]:
+                            sensitive_items.append(item)
+                    except (ValueError, KeyError):
+                        # Item doesn't exist in dataset, skip it
+                        pass
 
-            logger.info(f"Filtered to {len(sensitive_items)} sensitive items that exist in the dataset (removed {len(sensitive_items_raw) - len(sensitive_items)} items)")
+                logger.info(f"Filtered to {len(sensitive_items)} sensitive items that exist in the dataset (removed {len(sensitive_items_raw) - len(sensitive_items)} items)")
 
             if len(sensitive_items) == 0:
                 raise ValueError(

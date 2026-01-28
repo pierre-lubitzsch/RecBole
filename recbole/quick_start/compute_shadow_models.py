@@ -313,16 +313,28 @@ def compute_shadow_models(
         
         logger.info(f"Loaded forget set for unlearning: {len(forget_set_for_unlearning)} interactions")
     
+    # Log full dataset structure - all shadow models will have this same architecture
+    # because dataset.copy() preserves field2id_token mappings
+    logger.info(f"All shadow models will have the same architecture: "
+               f"{dataset_obj.num(uid_field)} users, "
+               f"{dataset_obj.num(iid_field)} items")
+    logger.info(f"Each shadow model will be trained on roughly half of the data "
+               f"(by excluding a subset of users)")
+    
     # Train shadow models for each partition
     for partition_idx in range(k):
         logger.info(f"Training shadow model {partition_idx + 1}/{k}")
         
         # Create dataset excluding users in this partition (OUT model)
+        # Using dataset.copy() with a mask preserves the full user/item embedding structure
+        # (field2id_token mappings), so all shadow models have the same architecture
         users_to_drop = user_subsets[partition_idx]  # Already a list from k_subsets_exact_np
         # Get user_ids from current dataset_obj (after forget set removal if applicable)
         current_user_ids = dataset_obj.inter_feat[uid_field].to_numpy()
         removed_mask = ~np.isin(current_user_ids, users_to_drop)
         
+        # Copy full dataset but mask out interactions we don't want for training
+        # This preserves the full user/item embedding structure while training on subset
         partition_dataset = dataset_obj.copy(dataset_obj.inter_feat[removed_mask])
         
         # Verify partition is valid: check that remaining users still have enough interactions
@@ -342,9 +354,11 @@ def compute_shadow_models(
         # Prepare data with same split as main experiment
         train_data, valid_data, test_data = data_preparation(config, partition_dataset)
         
-        # Initialize model
+        # Initialize model with partition_dataset - it has the same architecture as full dataset
+        # because dataset.copy() preserves field2id_token mappings (same n_users, n_items)
+        # but we train on the masked subset (roughly half the data)
         init_seed(config["seed"] + partition_idx, config["reproducibility"])
-        shadow_model = get_model(config["model"])(config, train_data._dataset).to(config["device"])
+        shadow_model = get_model(config["model"])(config, partition_dataset).to(config["device"])
         
         # Initialize trainer
         trainer = get_trainer(config["MODEL_TYPE"], config["model"])(config, shadow_model)
@@ -357,10 +371,19 @@ def compute_shadow_models(
         
         # Save model
         if saved:
-            model_filename = (
-                f"shadow_model_{model}_seed_{config['seed']}_dataset_{dataset}_"
-                f"partition_{partition_idx}.pth"
-            )
+            # Include sensitive_category and unlearning_fraction in filename to avoid conflicts
+            # when training shadow models with different forget sets
+            filename_parts = [
+                f"shadow_model_{model}",
+                f"seed_{config['seed']}",
+                f"dataset_{dataset}",
+            ]
+            if sensitive_category is not None:
+                filename_parts.append(f"category_{sensitive_category}")
+            if unlearning_fraction is not None:
+                filename_parts.append(f"unlearning_fraction_{unlearning_fraction}")
+            filename_parts.append(f"partition_{partition_idx}")
+            model_filename = "_".join(filename_parts) + ".pth"
             model_path = os.path.join(shadow_models_dir, model_filename)
             
             # Save checkpoint
@@ -403,8 +426,10 @@ def compute_shadow_models(
                         algo_kwargs.update(unlearning_kwargs)
                         
                         # Create a fresh copy of the shadow model for this algorithm
+                        # partition_dataset has the same architecture as full dataset (same n_users, n_items)
+                        # because dataset.copy() preserves field2id_token mappings
                         algo_unlearned_model = get_model(config["model"])(
-                            config, train_data._dataset
+                            config, partition_dataset
                         ).to(config["device"])
                         algo_unlearned_model.load_state_dict(shadow_model.state_dict())
                         algo_unlearned_model.load_other_parameter(shadow_model.other_parameter())
@@ -424,10 +449,21 @@ def compute_shadow_models(
                         )
                         
                         # Save unlearned model
-                        unlearned_model_filename = (
-                            f"shadow_model_unlearned_{model}_seed_{config['seed']}_dataset_{dataset}_"
-                            f"partition_{partition_idx}_algorithm_{algo}.pth"
-                        )
+                        # Include sensitive_category and unlearning_fraction in filename to avoid conflicts
+                        filename_parts = [
+                            f"shadow_model_unlearned_{model}",
+                            f"seed_{config['seed']}",
+                            f"dataset_{dataset}",
+                        ]
+                        if sensitive_category is not None:
+                            filename_parts.append(f"category_{sensitive_category}")
+                        if unlearning_fraction is not None:
+                            filename_parts.append(f"unlearning_fraction_{unlearning_fraction}")
+                        filename_parts.extend([
+                            f"partition_{partition_idx}",
+                            f"algorithm_{algo}"
+                        ])
+                        unlearned_model_filename = "_".join(filename_parts) + ".pth"
                         unlearned_model_path = os.path.join(shadow_models_dir, unlearned_model_filename)
                         
                         checkpoint = {
@@ -461,13 +497,20 @@ def compute_shadow_models(
             metadata["partitions"].append(partition_metadata)
     
     # Save metadata
-    # Include dataset and model in metadata filename to avoid conflicts
+    # Include dataset, model, sensitive_category, and unlearning_fraction in metadata filename to avoid conflicts
     metadata_path = None
     if saved:
-        metadata_path = os.path.join(
-            shadow_models_dir,
-            f"shadow_models_metadata_{model}_seed_{config['seed']}_dataset_{dataset}.json"
-        )
+        metadata_filename_parts = [
+            f"shadow_models_metadata_{model}",
+            f"seed_{config['seed']}",
+            f"dataset_{dataset}",
+        ]
+        if sensitive_category is not None:
+            metadata_filename_parts.append(f"category_{sensitive_category}")
+        if unlearning_fraction is not None:
+            metadata_filename_parts.append(f"unlearning_fraction_{unlearning_fraction}")
+        metadata_filename = "_".join(metadata_filename_parts) + ".json"
+        metadata_path = os.path.join(shadow_models_dir, metadata_filename)
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2, default=str)
         logger.info(f"Saved shadow models metadata to {metadata_path}")
