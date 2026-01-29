@@ -28,6 +28,7 @@ from recbole.data import (
     create_dataset,
     data_preparation,
 )
+from recbole.data.interaction import Interaction
 from recbole.data.transform import construct_transform
 from recbole.utils import (
     init_logger,
@@ -752,11 +753,19 @@ def run_recbole(
         sensitive_items_path = os.path.join(config['data_path'], f"sensitive_asins_{sensitive_category}.txt")
 
         if os.path.exists(sensitive_items_path):
-            with open(sensitive_items_path, 'r') as f:
-                sensitive_asins = set(line.strip() for line in f if line.strip())
-            print(f"Loaded {len(sensitive_asins)} sensitive items from {sensitive_items_path}")
+            # For NBR retrain, use pre-filtered sensitive items that were verified against original dataset
+            # This ensures we're checking the right items (those that exist before any filtering)
+            if config.task_type == "NBR" and "_filtered_sensitive_items" in config:
+                sensitive_asins = set(str(item) for item in config["_filtered_sensitive_items"])
+                print(f"Using {len(sensitive_asins)} pre-filtered sensitive items (verified against original dataset)")
+            else:
+                with open(sensitive_items_path, 'r') as f:
+                    sensitive_asins = set(line.strip() for line in f if line.strip())
+                print(f"Loaded {len(sensitive_asins)} sensitive items from {sensitive_items_path}")
 
-            # Map ASINs to internal item IDs
+            # Map ASINs to internal item IDs using the cleaned dataset
+            # The model predicts on the cleaned dataset, so we need IDs in that space
+            # Note: For NBR retrain, sensitive items are removed from user baskets but still exist in vocabulary
             sensitive_item_ids = set()
             iid_field = dataset.iid_field
             for asin in sensitive_asins:
@@ -764,10 +773,12 @@ def run_recbole(
                     item_id = dataset.token2id(iid_field, asin)
                     sensitive_item_ids.add(item_id)
                 except ValueError:
-                    # ASIN not in dataset (e.g., filtered out or not in this subset)
+                    # ASIN not in cleaned dataset vocabulary (completely removed or filtered out)
                     pass
 
-            print(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs (out of {len(sensitive_asins)} ASINs)")
+            print(f"Mapped to {len(sensitive_item_ids)} sensitive internal item IDs in cleaned dataset (out of {len(sensitive_asins)} ASINs)")
+            print(f"[Debug] Sample sensitive item IDs: {sorted(list(sensitive_item_ids))[:10]}")
+            print(f"[Debug] Cleaned dataset has {dataset.item_num} items, original_dataset has {original_dataset.item_num} items")
 
             # Determine which users to evaluate
             # For retrained or unlearned models, evaluate the users that were supposed to be unlearned
@@ -818,23 +829,24 @@ def run_recbole(
                     ]
                     users_unlearned = unlearning_checkpoints[checkpoint_idx]
 
-                    # Map the external user tokens to internal user IDs using the original dataset
-                    uid_field = original_dataset.uid_field
+                    # Map the external user tokens to internal user IDs using the cleaned dataset
+                    # We need to use the same dataset that we'll get history from for predictions
+                    uid_field = dataset.uid_field
                     sorted_users = sorted(unlearning_user_ids_raw)[: users_unlearned + 1]
                     unlearned_user_ids = []
                     skipped_users = []
                     for u in sorted_users:
                         try:
-                            user_id = original_dataset.token2id(uid_field, str(u))
+                            user_id = dataset.token2id(uid_field, str(u))
                             unlearned_user_ids.append(user_id)
                         except ValueError:
-                            # User token doesn't exist in original dataset, skip
+                            # User token doesn't exist in cleaned dataset, skip
                             skipped_users.append(str(u))
                             continue
 
                     if skipped_users:
                         logger.warning(
-                            f"Skipped {len(skipped_users)} users that don't exist in original dataset: "
+                            f"Skipped {len(skipped_users)} users that don't exist in cleaned dataset: "
                             f"{skipped_users[:5]}{'...' if len(skipped_users) > 5 else ''}"
                         )
 
@@ -979,16 +991,40 @@ def run_recbole(
                         item_seq_field = trainer.model.ITEM_SEQ
                         item_seq_len_field = trainer.model.ITEM_SEQ_LEN
 
-                        interaction = {
+                        interaction = Interaction({
                             dataset.uid_field: torch.tensor([user_id], device=trainer.device),
                             item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
                             item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
-                        }
+                        })
+                    elif config['task_type'] == 'NBR':
+                        # For NBR models, we need to provide history baskets
+                        user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                        user_indices = torch.where(user_mask)[0]
+
+                        if len(user_indices) == 0:
+                            # User has no interactions, skip
+                            skipped_users_no_interactions.append(user_id)
+                            continue
+
+                        # Get the last interaction which contains the longest/complete history
+                        last_idx = user_indices[-1].item()
+
+                        # Get the NBR history fields (these are set by NextBasketDataset)
+                        history_items_field = dataset.history_items_field  # 'history_item_matrix'
+                        history_length_field = dataset.history_length_field  # 'history_basket_length'
+                        history_item_len_field = dataset.history_item_len_field  # 'history_item_length_per_basket'
+
+                        interaction = Interaction({
+                            dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                            history_items_field: dataset.inter_feat[history_items_field][last_idx].unsqueeze(0).to(trainer.device),
+                            history_length_field: dataset.inter_feat[history_length_field][last_idx].unsqueeze(0).to(trainer.device),
+                            history_item_len_field: dataset.inter_feat[history_item_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                        })
                     else:
                         # For CF models and traditional models, only user_id is needed
-                        interaction = {
+                        interaction = Interaction({
                             dataset.uid_field: torch.tensor([user_id], device=trainer.device)
-                        }
+                        })
 
                     # Get predictions
                     scores = trainer.model.full_sort_predict(interaction)
@@ -1003,6 +1039,14 @@ def run_recbole(
 
             if skipped_users_no_interactions:
                 print(f"Skipped {len(skipped_users_no_interactions)} users with no interactions in retain dataset")
+
+            # Debug: Check first user's predictions
+            if len(all_user_topk_items) > 0:
+                first_user_id = list(all_user_topk_items.keys())[0]
+                first_user_topk = all_user_topk_items[first_user_id]
+                print(f"[Debug] First user ({first_user_id}) top-20 predictions: {first_user_topk[:20].tolist()}")
+                sensitive_in_first = [item for item in first_user_topk[:20] if item in sensitive_item_ids]
+                print(f"[Debug] Sensitive items in first user's top-20: {sensitive_in_first}")
 
             # Evaluate for each k value
             sensitive_results = []
@@ -2441,9 +2485,15 @@ def unlearn_recbole(
         sensitive_items_path = os.path.join(config['data_path'], f"sensitive_asins_{sensitive_category}.txt")
 
         if os.path.exists(sensitive_items_path):
-            with open(sensitive_items_path, 'r') as f:
-                sensitive_asins = set(line.strip() for line in f if line.strip())
-            print(f"Loaded {len(sensitive_asins)} sensitive items from {sensitive_items_path}")
+            # For NBR, use pre-filtered sensitive items that were verified against original dataset
+            # This ensures we're checking the right items (those that exist before any filtering)
+            if config.task_type == "NBR" and "_filtered_sensitive_items" in config:
+                sensitive_asins = set(str(item) for item in config["_filtered_sensitive_items"])
+                print(f"Using {len(sensitive_asins)} pre-filtered sensitive items (verified against original dataset)")
+            else:
+                with open(sensitive_items_path, 'r') as f:
+                    sensitive_asins = set(line.strip() for line in f if line.strip())
+                print(f"Loaded {len(sensitive_asins)} sensitive items from {sensitive_items_path}")
 
             # Map ASINs to internal item IDs
             # The dataset has item_id tokens that need to be mapped
@@ -2504,11 +2554,11 @@ def unlearn_recbole(
                             item_seq_field = trainer.model.ITEM_SEQ
                             item_seq_len_field = trainer.model.ITEM_SEQ_LEN
 
-                            interaction = {
+                            interaction = Interaction({
                                 dataset.uid_field: torch.tensor([user_id], device=trainer.device),
                                 item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
                                 item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
-                            }
+                            })
                         elif config['task_type'] == 'NBR':
                             # For NBR models, we need to provide history baskets
                             # Get the user's interaction data from the dataset
@@ -2527,17 +2577,17 @@ def unlearn_recbole(
                             history_length_field = dataset.history_length_field  # 'history_basket_length'
                             history_item_len_field = dataset.history_item_len_field  # 'history_item_length_per_basket'
 
-                            interaction = {
+                            interaction = Interaction({
                                 dataset.uid_field: torch.tensor([user_id], device=trainer.device),
                                 history_items_field: dataset.inter_feat[history_items_field][last_idx].unsqueeze(0).to(trainer.device),
                                 history_length_field: dataset.inter_feat[history_length_field][last_idx].unsqueeze(0).to(trainer.device),
                                 history_item_len_field: dataset.inter_feat[history_item_len_field][last_idx].unsqueeze(0).to(trainer.device)
-                            }
+                            })
                         else:
                             # For CF models, only user_id is needed
-                            interaction = {
+                            interaction = Interaction({
                                 'user_id': torch.tensor([user_id], device=trainer.device)
-                            }
+                            })
 
                         # Get predictions
                         scores = trainer.model.full_sort_predict(interaction)
