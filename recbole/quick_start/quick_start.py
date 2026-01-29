@@ -376,7 +376,7 @@ def run_recbole(
                 # This applies normal dataset filtering (MIN_NBR_BASKET_COUNT, user_inter_num_interval, etc.)
                 original_config = Config(
                     model=model,  # Use function parameter
-                    dataset=dataset,  # Use function parameter
+                    dataset=config["dataset"],  # Use dataset name string, not dataset object
                     config_file_list=config_file_list,  # Use original config files to get all defaults
                     config_dict={
                         "NEXT_BASKET_JSON": f"{config['dataset']}_merged.json",
