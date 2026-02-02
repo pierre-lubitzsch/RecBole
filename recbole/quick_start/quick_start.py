@@ -964,6 +964,8 @@ def run_recbole(
             all_user_topk_items = {}
             skipped_users_no_interactions = []
             trainer.model.eval()
+            # Use test_data._dataset to access the underlying dataset after data_preparation
+            eval_dataset = test_data._dataset
             with torch.no_grad():
                 for user_id in unlearned_user_ids:
                     # Create interaction for this user based on model type
@@ -976,7 +978,7 @@ def run_recbole(
                         # Get the user's interaction data from the dataset
                         # The dataset.inter_feat is sorted by uid and time, and after augmentation
                         # each row contains the history up to that point
-                        user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                        user_mask = eval_dataset.inter_feat[eval_dataset.uid_field] == user_id
                         user_indices = torch.where(user_mask)[0]
 
                         if len(user_indices) == 0:
@@ -992,13 +994,13 @@ def run_recbole(
                         item_seq_len_field = trainer.model.ITEM_SEQ_LEN
 
                         interaction = Interaction({
-                            dataset.uid_field: torch.tensor([user_id], device=trainer.device),
-                            item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
-                            item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                            eval_dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                            item_seq_field: eval_dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
+                            item_seq_len_field: eval_dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
                         })
                     elif config['task_type'] == 'NBR':
                         # For NBR models, we need to provide history baskets
-                        user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                        user_mask = eval_dataset.inter_feat[eval_dataset.uid_field] == user_id
                         user_indices = torch.where(user_mask)[0]
 
                         if len(user_indices) == 0:
@@ -1010,20 +1012,20 @@ def run_recbole(
                         last_idx = user_indices[-1].item()
 
                         # Get the NBR history fields (these are set by NextBasketDataset)
-                        history_items_field = dataset.history_items_field  # 'history_item_matrix'
-                        history_length_field = dataset.history_length_field  # 'history_basket_length'
-                        history_item_len_field = dataset.history_item_len_field  # 'history_item_length_per_basket'
+                        history_items_field = eval_dataset.history_items_field  # 'history_item_matrix'
+                        history_length_field = eval_dataset.history_length_field  # 'history_basket_length'
+                        history_item_len_field = eval_dataset.history_item_len_field  # 'history_item_length_per_basket'
 
                         interaction = Interaction({
-                            dataset.uid_field: torch.tensor([user_id], device=trainer.device),
-                            history_items_field: dataset.inter_feat[history_items_field][last_idx].unsqueeze(0).to(trainer.device),
-                            history_length_field: dataset.inter_feat[history_length_field][last_idx].unsqueeze(0).to(trainer.device),
-                            history_item_len_field: dataset.inter_feat[history_item_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                            eval_dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                            history_items_field: eval_dataset.inter_feat[history_items_field][last_idx].unsqueeze(0).to(trainer.device),
+                            history_length_field: eval_dataset.inter_feat[history_length_field][last_idx].unsqueeze(0).to(trainer.device),
+                            history_item_len_field: eval_dataset.inter_feat[history_item_len_field][last_idx].unsqueeze(0).to(trainer.device)
                         })
                     else:
                         # For CF models and traditional models, only user_id is needed
                         interaction = Interaction({
-                            dataset.uid_field: torch.tensor([user_id], device=trainer.device)
+                            eval_dataset.uid_field: torch.tensor([user_id], device=trainer.device)
                         })
 
                     # Get predictions
@@ -2532,6 +2534,8 @@ def unlearn_recbole(
 
                 # Get top-max_k predictions once for all users
                 all_user_topk_items = {}
+                # Use test_data._dataset to access the underlying dataset after data_preparation
+                eval_dataset = test_data._dataset
                 with torch.no_grad():
                     for user_id in unlearned_user_ids:
                         # Create interaction for this user based on task type
@@ -2540,7 +2544,7 @@ def unlearn_recbole(
                             # Get the user's interaction data from the dataset
                             # The dataset.inter_feat is sorted by uid and time, and after augmentation
                             # each row contains the history up to that point
-                            user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                            user_mask = eval_dataset.inter_feat[eval_dataset.uid_field] == user_id
                             user_indices = torch.where(user_mask)[0]
 
                             if len(user_indices) == 0:
@@ -2555,14 +2559,14 @@ def unlearn_recbole(
                             item_seq_len_field = trainer.model.ITEM_SEQ_LEN
 
                             interaction = Interaction({
-                                dataset.uid_field: torch.tensor([user_id], device=trainer.device),
-                                item_seq_field: dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
-                                item_seq_len_field: dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                                eval_dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                                item_seq_field: eval_dataset.inter_feat[item_seq_field][last_idx].unsqueeze(0).to(trainer.device),
+                                item_seq_len_field: eval_dataset.inter_feat[item_seq_len_field][last_idx].unsqueeze(0).to(trainer.device)
                             })
                         elif config['task_type'] == 'NBR':
                             # For NBR models, we need to provide history baskets
                             # Get the user's interaction data from the dataset
-                            user_mask = dataset.inter_feat[dataset.uid_field] == user_id
+                            user_mask = eval_dataset.inter_feat[eval_dataset.uid_field] == user_id
                             user_indices = torch.where(user_mask)[0]
 
                             if len(user_indices) == 0:
@@ -2573,15 +2577,15 @@ def unlearn_recbole(
                             last_idx = user_indices[-1].item()
 
                             # Get the NBR history fields (these are set by NextBasketDataset)
-                            history_items_field = dataset.history_items_field  # 'history_item_matrix'
-                            history_length_field = dataset.history_length_field  # 'history_basket_length'
-                            history_item_len_field = dataset.history_item_len_field  # 'history_item_length_per_basket'
+                            history_items_field = eval_dataset.history_items_field  # 'history_item_matrix'
+                            history_length_field = eval_dataset.history_length_field  # 'history_basket_length'
+                            history_item_len_field = eval_dataset.history_item_len_field  # 'history_item_length_per_basket'
 
                             interaction = Interaction({
-                                dataset.uid_field: torch.tensor([user_id], device=trainer.device),
-                                history_items_field: dataset.inter_feat[history_items_field][last_idx].unsqueeze(0).to(trainer.device),
-                                history_length_field: dataset.inter_feat[history_length_field][last_idx].unsqueeze(0).to(trainer.device),
-                                history_item_len_field: dataset.inter_feat[history_item_len_field][last_idx].unsqueeze(0).to(trainer.device)
+                                eval_dataset.uid_field: torch.tensor([user_id], device=trainer.device),
+                                history_items_field: eval_dataset.inter_feat[history_items_field][last_idx].unsqueeze(0).to(trainer.device),
+                                history_length_field: eval_dataset.inter_feat[history_length_field][last_idx].unsqueeze(0).to(trainer.device),
+                                history_item_len_field: eval_dataset.inter_feat[history_item_len_field][last_idx].unsqueeze(0).to(trainer.device)
                             })
                         else:
                             # For CF models, only user_id is needed
