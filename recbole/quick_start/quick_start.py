@@ -1878,9 +1878,6 @@ def unlearn_recbole(
                 # Store which users have been unlearned at this checkpoint (before skipping)
                 checkpoint_idx = retrain_checkpoint_idx_to_match
                 unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
-                # Increment checkpoint counter (before skipping in eval_only mode)
-                retrain_checkpoint_idx_to_match += 1
-                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
             
             if "eval_only" in config and config["eval_only"]:
                 continue
@@ -2123,7 +2120,10 @@ def unlearn_recbole(
             
             print(f"\n\nBatch {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
             
-            # Checkpoint counter already incremented before eval_only check if needed
+            # Increment checkpoint counter after unlearning completes
+            if saved_checkpoint:
+                retrain_checkpoint_idx_to_match += 1
+                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
             
             sys.stdout.flush()
             gc.collect()
@@ -2170,9 +2170,6 @@ def unlearn_recbole(
                 # Store which users have been unlearned at this checkpoint (before skipping)
                 checkpoint_idx = retrain_checkpoint_idx_to_match
                 unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
-                # Increment checkpoint counter (before skipping in eval_only mode)
-                retrain_checkpoint_idx_to_match += 1
-                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
 
             if "eval_only" in config and config["eval_only"]:
                 continue
@@ -2414,7 +2411,10 @@ def unlearn_recbole(
             
             print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
 
-            # Checkpoint counter already incremented before eval_only check if needed
+            # Increment checkpoint counter after unlearning completes
+            if saved_checkpoint:
+                retrain_checkpoint_idx_to_match += 1
+                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
 
             sys.stdout.flush()
             gc.collect()
