@@ -361,6 +361,11 @@ def main():
         help="if set, only evaluate instead of unlearning and then evaluating",
     )
     parser.add_argument(
+        "--sensitive_eval_only",
+        action="store_true",
+        help="if set, only evaluate sensitive items and skip normal evaluation metrics (must be used with --eval_only)",
+    )
+    parser.add_argument(
         "--dont_save_interaction_probabilities",
         action="store_true",
         help="if set, skip saving model interaction probabilities to pickle file (saves storage)",
@@ -439,6 +444,7 @@ def main():
         "unlearning_algorithm": args.unlearning_algorithm,
         "gpu_id": args.gpu_id,
         "eval_only": args.eval_only,
+        "sensitive_eval_only": args.sensitive_eval_only,
         "save_interaction_probabilities": not args.dont_save_interaction_probabilities,
         "task_type": args.task_type,
         "ind": args.ind,

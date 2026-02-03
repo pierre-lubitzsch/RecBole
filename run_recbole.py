@@ -142,6 +142,11 @@ if __name__ == "__main__":
         help="if set, skip training and only run evaluation on a saved model",
     )
     parser.add_argument(
+        "--sensitive_eval_only",
+        action="store_true",
+        help="if set, only evaluate sensitive items and skip normal evaluation metrics (must be used with --eval_only)",
+    )
+    parser.add_argument(
         "--adam_beta1",
         type=float,
         default=None,
@@ -200,6 +205,8 @@ if __name__ == "__main__":
         config_dict["max_training_hours"] = args.max_training_hours
     if args.eval_only:
         config_dict["eval_only"] = True
+    if args.sensitive_eval_only:
+        config_dict["sensitive_eval_only"] = True
     if args.adam_beta1 is not None:
         config_dict["adam_beta1"] = args.adam_beta1
     if args.adam_beta2 is not None:

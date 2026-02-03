@@ -52,6 +52,80 @@ import re
 import traceback
 from copy import deepcopy
 
+
+def save_sensitive_results_to_csv(sensitive_results, config, retrain_flag=False, unlearning_algorithm=None):
+    """
+    Save sensitive item evaluation results to a CSV file.
+    
+    Args:
+        sensitive_results (list): List of dictionaries containing sensitive item evaluation results
+        config (Config): Configuration object with model/dataset info
+        retrain_flag (bool): Whether this is a retraining evaluation
+        unlearning_algorithm (str): Name of the unlearning algorithm (for unlearning models)
+    """
+    if not sensitive_results or len(sensitive_results) == 0:
+        return
+    
+    # Flatten results for CSV
+    csv_rows = []
+    
+    for result_dict in sensitive_results:
+        # Base metadata
+        base_row = {
+            "dataset": config["dataset"],
+            "model": config["model"],
+            "seed": config.get("seed", None),
+            "sensitive_category": result_dict.get("sensitive_category", config.get("sensitive_category", None)),
+            "checkpoint_idx": result_dict.get("checkpoint_idx", None),
+            "eval_type": "retraining" if result_dict.get("is_retrained", False) else "unlearning" if result_dict.get("is_unlearned", False) else "original",
+            "unlearning_algorithm": unlearning_algorithm if result_dict.get("is_unlearned", False) else None,
+            "unlearning_fraction": config.get("unlearning_fraction", None),
+            "topk": result_dict.get("topk", None),
+        }
+        
+        # Sensitive item metrics
+        base_row.update({
+            "users_with_sensitive": result_dict.get("users_with_sensitive_in_topk", 0),
+            "total_users": result_dict.get("total_unlearned_users", 0),
+            "pct_users_with_sensitive": result_dict.get("pct_users_with_sensitive", 0.0),
+            "avg_sensitive_per_user": result_dict.get("avg_sensitive_per_user", 0.0),
+            "min_sensitive_per_user": result_dict.get("min_sensitive_per_user", 0),
+            "max_sensitive_per_user": result_dict.get("max_sensitive_per_user", 0),
+            "total_sensitive_in_topk": result_dict.get("total_sensitive_in_topk", 0),
+        })
+        
+        csv_rows.append(base_row)
+    
+    # Create DataFrame
+    df = pd.DataFrame(csv_rows)
+    
+    # Construct output filename
+    model_name = config["model"]
+    dataset_name = config["dataset"]
+    seed = config.get("seed", "unknown")
+    sensitive_category = config.get("sensitive_category", "unknown")
+    
+    if retrain_flag:
+        eval_type_str = "retrain"
+        checkpoint_idx = config.get("retrain_checkpoint_idx_to_match", "unknown")
+        output_file = f"sensitive_eval_{dataset_name}_{model_name}_seed_{seed}_category_{sensitive_category}_checkpoint_{checkpoint_idx}_{eval_type_str}.csv"
+    elif unlearning_algorithm:
+        eval_type_str = "unlearn"
+        checkpoint_idx = config.get("retrain_checkpoint_idx_to_match", "unknown")
+        output_file = f"sensitive_eval_{dataset_name}_{model_name}_seed_{seed}_category_{sensitive_category}_checkpoint_{checkpoint_idx}_{eval_type_str}_{unlearning_algorithm}.csv"
+    else:
+        output_file = f"sensitive_eval_{dataset_name}_{model_name}_seed_{seed}_category_{sensitive_category}_original.csv"
+    
+    # Save to CSV
+    output_path = os.path.join(".", output_file)
+    df.to_csv(output_path, index=False)
+    
+    print(f"\nSensitive evaluation results saved to: {output_path}")
+    print(f"Total rows: {len(df)}")
+    
+    return output_path
+
+
 def run(
     model,
     dataset,
@@ -534,6 +608,7 @@ def run_recbole(
 
     # Check if eval_only mode is enabled
     eval_only = "eval_only" in config and config["eval_only"]
+    sensitive_eval_only = "sensitive_eval_only" in config and config["sensitive_eval_only"]
     
     if eval_only:
         # Skip training and load model from checkpoint
@@ -567,22 +642,27 @@ def run_recbole(
         )
 
     # model evaluation
-    test_result = trainer.evaluate(
-        test_data, load_best_model=(saved and not eval_only) or eval_only, show_progress=False,
-    )
+    if sensitive_eval_only:
+        # Skip normal evaluation, only do sensitive item evaluation later
+        logger.info("Sensitive-eval-only mode: skipping normal evaluation metrics")
+        test_result = {}
+    else:
+        test_result = trainer.evaluate(
+            test_data, load_best_model=(saved and not eval_only) or eval_only, show_progress=False,
+        )
 
-    environment_tb = get_environment(config)
-    logger.info(
-        "The running environment of this training is as follows:\n"
-        + environment_tb.draw()
-    )
+        environment_tb = get_environment(config)
+        logger.info(
+            "The running environment of this training is as follows:\n"
+            + environment_tb.draw()
+        )
 
-    logger.info(set_color("best valid ", "yellow") + f": {best_valid_result}")
-    logger.info(set_color("test result", "yellow") + f": {test_result}")
+        logger.info(set_color("best valid ", "yellow") + f": {best_valid_result}")
+        logger.info(set_color("test result", "yellow") + f": {test_result}")
 
     # For spam scenarios, also evaluate on unpoisoned data
     unpoisoned_test_result = None
-    if spam and not remove_forget_set and not config["rmia_out_model_flag"]:
+    if spam and not remove_forget_set and not config["rmia_out_model_flag"] and not sensitive_eval_only:
         logger.info("\n" + "="*50)
         logger.info("Evaluating on unpoisoned (clean) data...")
         logger.info("="*50)
@@ -1101,6 +1181,15 @@ def run_recbole(
                 })
 
             result["sensitive_item_evaluation"] = sensitive_results
+            
+            # Save to CSV if sensitive_eval_only mode is enabled
+            if sensitive_eval_only:
+                save_sensitive_results_to_csv(
+                    sensitive_results, 
+                    config, 
+                    retrain_flag=retrain_flag,
+                    unlearning_algorithm=None
+                )
 
         else:
             print(f"Warning: Sensitive items file not found at {sensitive_items_path}")
@@ -1154,6 +1243,7 @@ def unlearn_recbole(
     seif_weight_decay=5e-4,
     unlearning_batchsize=1,
     max_training_hours=None,
+    sensitive_eval_only=False,
 ):
     r"""A fast running api, which includes the complete process of
     training and testing a model on a specified dataset
@@ -1785,6 +1875,12 @@ def unlearn_recbole(
             if saved_checkpoint:
                 eval_mask = removed_mask.copy()
                 eval_masks.append(eval_mask)
+                # Store which users have been unlearned at this checkpoint (before skipping)
+                checkpoint_idx = retrain_checkpoint_idx_to_match
+                unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
+                # Increment checkpoint counter (before skipping in eval_only mode)
+                retrain_checkpoint_idx_to_match += 1
+                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
             
             if "eval_only" in config and config["eval_only"]:
                 continue
@@ -2027,13 +2123,7 @@ def unlearn_recbole(
             
             print(f"\n\nBatch {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
             
-            if saved_checkpoint:
-                # Store which users have been unlearned at this checkpoint
-                checkpoint_idx = retrain_checkpoint_idx_to_match
-                unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
-                
-                retrain_checkpoint_idx_to_match += 1
-                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
+            # Checkpoint counter already incremented before eval_only check if needed
             
             sys.stdout.flush()
             gc.collect()
@@ -2073,10 +2163,16 @@ def unlearn_recbole(
             removed_mask[all_idx[mask]] = True
 
             saved_checkpoint = unlearn_request_idx in unlearning_checkpoints
-
+            
             if saved_checkpoint:
                 eval_mask = removed_mask.copy()
                 eval_masks.append(eval_mask)
+                # Store which users have been unlearned at this checkpoint (before skipping)
+                checkpoint_idx = retrain_checkpoint_idx_to_match
+                unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
+                # Increment checkpoint counter (before skipping in eval_only mode)
+                retrain_checkpoint_idx_to_match += 1
+                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
 
             if "eval_only" in config and config["eval_only"]:
                 continue
@@ -2318,13 +2414,7 @@ def unlearn_recbole(
             
             print(f"\n\nRequest {unlearn_request_idx + 1} completed in {request_time:.2f} seconds\n\n")
 
-            if saved_checkpoint:
-                # Store which users have been unlearned at this checkpoint
-                checkpoint_idx = retrain_checkpoint_idx_to_match
-                unlearned_users_at_checkpoint[checkpoint_idx] = list(unlearned_users_before)
-
-                retrain_checkpoint_idx_to_match += 1
-                config["retrain_checkpoint_idx_to_match"] = retrain_checkpoint_idx_to_match
+            # Checkpoint counter already incremented before eval_only check if needed
 
             sys.stdout.flush()
             gc.collect()
@@ -2348,75 +2438,82 @@ def unlearn_recbole(
 
     # Dictionary to store per-model interaction data as lists of tuples
     model_interaction_probabilities = {}
-
-    print("Original Model:")
-    print(f"Evaluating model {base_model_path} on data with current mask\n")
-    if not os.path.exists(base_model_path):
-        print(f"Warning: Base model file not found: {base_model_path}, skipping evaluation")
-        test_result = None
+    
+    # Check if we should skip normal evaluation metrics
+    sensitive_eval_only = "sensitive_eval_only" in config and config["sensitive_eval_only"]
+    
+    if not sensitive_eval_only:
+        print("Original Model:")
+        print(f"Evaluating model {base_model_path} on data with current mask\n")
+        if not os.path.exists(base_model_path):
+            print(f"Warning: Base model file not found: {base_model_path}, skipping evaluation")
+            test_result = None
+        else:
+            test_result = trainer.evaluate(
+                test_data, load_best_model=True, show_progress=False, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
+            )
+            if test_result is None:
+                print(f"Warning: Failed to evaluate base model {base_model_path}")
+            elif spam:
+                test_result, probability_data = test_result
+        if test_result is not None:
+            print(test_result)
     else:
-        test_result = trainer.evaluate(
-            test_data, load_best_model=True, show_progress=False, model_file=base_model_path, collect_target_probabilities=spam, target_items=target_items,
-        )
-        if test_result is None:
-            print(f"Warning: Failed to evaluate base model {base_model_path}")
-        elif spam:
-            test_result, probability_data = test_result
-    if test_result is not None:
-        print(test_result)
+        print("Sensitive-eval-only mode: skipping normal evaluation metrics for all models")
 
     # First loop: evaluate each model on its corresponding masked data
-    for i, (file, mask) in enumerate(zip(eval_files, eval_masks)):
-        # Skip if checkpoint file doesn't exist
-        if not os.path.exists(file):
-            print(f"Skipping evaluation for {file} - checkpoint file not found")
-            continue
+    if not sensitive_eval_only:
+        for i, (file, mask) in enumerate(zip(eval_files, eval_masks)):
+            # Skip if checkpoint file doesn't exist
+            if not os.path.exists(file):
+                print(f"Skipping evaluation for {file} - checkpoint file not found")
+                continue
+                
+            print(f"Evaluating model {file} on data with current mask\n")
             
-        print(f"Evaluating model {file} on data with current mask\n")
-        
-        model_interaction_probabilities[file] = []
-        
-        # Clear GPU cache before each evaluation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # test on data with just current poisoned data removed
-        cur_eval_df = orig_inter_df.loc[~mask]
-        cur_eval_dataset = dataset.copy(cur_eval_df)
-        cur_train_data, cur_val_data, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam, sampler=unlearning_sampler)
+            model_interaction_probabilities[file] = []
+            
+            # Clear GPU cache before each evaluation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # test on data with just current poisoned data removed
+            cur_eval_df = orig_inter_df.loc[~mask]
+            cur_eval_dataset = dataset.copy(cur_eval_df)
+            cur_train_data, cur_val_data, cur_test_data = data_preparation(config, cur_eval_dataset, spam=spam, sampler=unlearning_sampler)
 
-        del cur_train_data, cur_val_data  # we only need test data for evaluation
-        gc.collect()
+            del cur_train_data, cur_val_data  # we only need test data for evaluation
+            gc.collect()
 
-        test_result = trainer.evaluate(
-            cur_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
-        )
-        if test_result is None:
-            print(f"Skipping results for {file} - evaluation failed (checkpoint not found)")
-            continue
-        if spam:
-            test_result, probability_data = test_result
-            model_interaction_probabilities[file] = probability_data
+            test_result = trainer.evaluate(
+                cur_test_data, load_best_model=True, show_progress=False, model_file=file, collect_target_probabilities=spam, target_items=target_items,
+            )
+            if test_result is None:
+                print(f"Skipping results for {file} - evaluation failed (checkpoint not found)")
+                continue
+            if spam:
+                test_result, probability_data = test_result
+                model_interaction_probabilities[file] = probability_data
 
-        result = {
-            "test_result": test_result,
-            "model_file": file,
-            "mask_type": "current",
-        }
-        results.append(result)
-        print(f"Results for model {file} only removing currently poisoned data: {test_result}")
-        
-        # clear the current test data
-        del cur_eval_df, cur_eval_dataset, cur_test_data
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        print("\n")
-        sys.stdout.flush()
+            result = {
+                "test_result": test_result,
+                "model_file": file,
+                "mask_type": "current",
+            }
+            results.append(result)
+            print(f"Results for model {file} only removing currently poisoned data: {test_result}")
+            
+            # clear the current test data
+            del cur_eval_df, cur_eval_dataset, cur_test_data
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            print("\n")
+            sys.stdout.flush()
 
     # Only evaluate on unpoisoned data in spam scenario
-    if spam:
+    if spam and not sensitive_eval_only:
         print("Creating unpoisoned dataset for all models...")
         unpoisoned_eval_df = orig_inter_df.loc[~eval_masks[-1]]
         unpoisoned_eval_dataset = dataset.copy(unpoisoned_eval_df)
@@ -2466,7 +2563,7 @@ def unlearn_recbole(
             torch.cuda.empty_cache()    
 
     # Save model interaction probabilities if spam mode (default: True, can be disabled with dont_save_interaction_probabilities)
-    if spam and config.get("save_interaction_probabilities", True):
+    if spam and config.get("save_interaction_probabilities", True) and not sensitive_eval_only:
         # Save to the same directory as the model files
         # trainer.saved_model_file is like "saved/model_XXX.pth", so dirname gives us "saved"
         model_dir = os.path.dirname(trainer.saved_model_file) or config.get("checkpoint_dir", "saved")
@@ -2829,6 +2926,18 @@ def unlearn_recbole(
         except Exception as e:
             print(f"Error during RULI Privacy evaluation: {e}")
             traceback.print_exc()
+
+    # Save sensitive results to CSV if sensitive_eval_only mode is enabled
+    if sensitive_eval_only and config.get('sensitive_category') is not None:
+        # Filter results to get only sensitive item evaluation results
+        sensitive_results = [r for r in results if 'sensitive_category' in r and 'topk' in r]
+        if sensitive_results:
+            save_sensitive_results_to_csv(
+                sensitive_results,
+                config,
+                retrain_flag=False,
+                unlearning_algorithm=unlearning_algorithm
+            )
 
     return results
 
