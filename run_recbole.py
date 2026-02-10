@@ -164,6 +164,24 @@ if __name__ == "__main__":
         default=None,
         help="Adam optimizer epsilon parameter (default: 1e-8)",
     )
+    parser.add_argument(
+        "--hf_model_path",
+        type=str,
+        default=None,
+        help="HuggingFace model path (e.g., hf://username/repo-name/model.pth) for eval_only mode",
+    )
+    parser.add_argument(
+        "--hf_token",
+        type=str,
+        default=None,
+        help="HuggingFace access token for private models (optional)",
+    )
+    parser.add_argument(
+        "--hf_cache_dir",
+        type=str,
+        default=None,
+        help="Directory to cache HuggingFace downloads (optional)",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -213,6 +231,12 @@ if __name__ == "__main__":
         config_dict["adam_beta2"] = args.adam_beta2
     if args.adam_eps is not None:
         config_dict["adam_eps"] = args.adam_eps
+    if args.hf_model_path is not None:
+        config_dict["hf_model_path"] = args.hf_model_path
+    if args.hf_token is not None:
+        config_dict["hf_token"] = args.hf_token
+    if args.hf_cache_dir is not None:
+        config_dict["hf_cache_dir"] = args.hf_cache_dir
 
     run(
         args.model,

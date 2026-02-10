@@ -17,6 +17,11 @@ from recbole.utils.utils import (
 from recbole.utils.enum_type import *
 from recbole.utils.argument_list import *
 from recbole.utils.wandblogger import WandbLogger
+from recbole.utils.hf_model_loader import (
+    HuggingFaceModelLoader,
+    parse_hf_model_path,
+    load_model_from_path,
+)
 
 __all__ = [
     "init_logger",
@@ -46,4 +51,7 @@ __all__ = [
     "get_environment",
     "list_to_latex",
     "WandbLogger",
+    "HuggingFaceModelLoader",
+    "parse_hf_model_path",
+    "load_model_from_path",
 ]
